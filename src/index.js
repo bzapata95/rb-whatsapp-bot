@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import fs from 'fs';
+import path from 'path';
 import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = pkg;
 import qrcode from 'qrcode-terminal';
@@ -12,6 +14,28 @@ const TIPO_CAMBIO = config.TIPO_CAMBIO_SOLES;
 const MONEDA_ORIGEN = config.MONEDA_ORIGEN;
 
 const faltaConfigurarGrupos = !GRUPO_ORIGEN || !GRUPO_DESTINO;
+
+// Quitar bloqueo de Chromium si quedó de otro proceso/servidor (evita "profile is in use by process X on another computer")
+try {
+  const authDir = path.join(process.cwd(), '.wwebjs_auth');
+  if (fs.existsSync(authDir)) {
+    const sessionLock = path.join(authDir, 'session', 'SingletonLock');
+    if (fs.existsSync(sessionLock)) {
+      fs.unlinkSync(sessionLock);
+      console.log('Bloqueo de Chromium eliminado (perfil anterior)');
+    }
+    const dirs = fs.readdirSync(authDir, { withFileTypes: true });
+    for (const d of dirs) {
+      if (d.isDirectory() && d.name.startsWith('session-')) {
+        const lock = path.join(authDir, d.name, 'SingletonLock');
+        if (fs.existsSync(lock)) {
+          fs.unlinkSync(lock);
+          console.log('Bloqueo de Chromium eliminado:', d.name);
+        }
+      }
+    }
+  }
+} catch (_) {}
 
 // Ruta a Chrome/Chromium (env CHROME_PATH o PUPPETEER_EXECUTABLE_PATH para override)
 const chromePath =
@@ -157,7 +181,29 @@ client.on('message', async (msg) => {
   }
 });
 
-client.initialize().catch((err) => {
-  console.error('Error al iniciar:', err);
-  process.exit(1);
-});
+// Reintentos al iniciar (en servidor la página puede navegar y destruir el context)
+const MAX_INIT_RETRIES = 5;
+const INIT_RETRY_DELAY_MS = 8000;
+
+async function initWithRetry() {
+  for (let attempt = 1; attempt <= MAX_INIT_RETRIES; attempt++) {
+    try {
+      await client.initialize();
+      return;
+    } catch (err) {
+      const isRetryable =
+        /Execution context was destroyed|Requesting main frame too early|Target closed|Protocol error/i.test(err.message);
+      if (isRetryable && attempt < MAX_INIT_RETRIES) {
+        console.warn(
+          `Error al iniciar (intento ${attempt}/${MAX_INIT_RETRIES}): ${err.message}. Reintentando en ${INIT_RETRY_DELAY_MS / 1000}s...`
+        );
+        await new Promise((r) => setTimeout(r, INIT_RETRY_DELAY_MS));
+      } else {
+        console.error('Error al iniciar:', err);
+        process.exit(1);
+      }
+    }
+  }
+}
+
+initWithRetry();

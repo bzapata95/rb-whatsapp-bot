@@ -138,6 +138,28 @@ pm2 save
 
 La primera vez que arranques con PM2, conecta por SSH y ejecuta `pm2 logs rb-whatsapp` para ver el QR y escanearlo con WhatsApp.
 
+**Si sale "The profile appears to be in use by another Chromium process":**
+
+Un Chromium anterior quedó abierto (reinicio brusco, crash, etc.). Hay que matar ese proceso y volver a arrancar:
+
+```bash
+pm2 stop rb-whatsapp
+pkill -f chromium
+# o, si el error muestra un PID (ej. 1258451): kill 1258451
+pm2 start rb-whatsapp
+pm2 logs rb-whatsapp
+```
+
+Si sigue fallando, borra el perfil del navegador (perderás la sesión de WhatsApp y tendrás que escanear el QR de nuevo):
+
+```bash
+pm2 stop rb-whatsapp
+pkill -f chromium
+rm -rf .wwebjs_auth/session-*
+# o todo: rm -rf .wwebjs_auth
+pm2 start rb-whatsapp
+```
+
 ## Notas
 
 - La sesión se guarda en `.wwebjs_auth`; no hace falta escanear el QR cada vez.
