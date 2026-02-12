@@ -10,17 +10,21 @@ const { Client, LocalAuth } = pkg;
 import qrcode from 'qrcode-terminal';
 
 const chromePath =
-  process.platform === 'darwin'
+  process.env.CHROME_PATH ||
+  process.env.PUPPETEER_EXECUTABLE_PATH ||
+  (process.platform === 'darwin'
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
     : process.platform === 'win32'
       ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-      : undefined;
+      : process.platform === 'linux'
+        ? '/usr/bin/chromium-browser'
+        : undefined);
 
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
   puppeteer: {
     headless: true,
-    args: ['--no-sandbox'],
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
     ...(chromePath && { executablePath: chromePath }),
   },
 });

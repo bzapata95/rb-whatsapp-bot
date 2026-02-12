@@ -13,19 +13,30 @@ const MONEDA_ORIGEN = config.MONEDA_ORIGEN;
 
 const faltaConfigurarGrupos = !GRUPO_ORIGEN || !GRUPO_DESTINO;
 
-// Usar Chrome del sistema si Puppeteer no encuentra el suyo (macOS)
+// Ruta a Chrome/Chromium (env CHROME_PATH o PUPPETEER_EXECUTABLE_PATH para override)
 const chromePath =
-  process.platform === 'darwin'
+  process.env.CHROME_PATH ||
+  process.env.PUPPETEER_EXECUTABLE_PATH ||
+  (process.platform === 'darwin'
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
     : process.platform === 'win32'
       ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-      : undefined;
+      : process.platform === 'linux'
+        ? '/usr/bin/chromium-browser'
+        : undefined);
 
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
   puppeteer: {
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-zygote',
+      '--single-process',
+    ],
     ...(chromePath && { executablePath: chromePath }),
   },
 });

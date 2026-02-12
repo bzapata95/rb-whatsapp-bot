@@ -6,6 +6,7 @@ Bot que escucha un grupo de WhatsApp, extrae mensajes con **foto + precio** (pro
 
 - Node.js 18+
 - Cuenta de WhatsApp (escaneas QR una vez; la sesión se guarda en `.wwebjs_auth`)
+- **En servidor Linux (ej. DigitalOcean):** Chromium instalado (ver más abajo)
 
 ## Instalación
 
@@ -82,6 +83,24 @@ rb-whatsapp/
 │   └── getGroups.js   # Utilidad para listar grupos y ver IDs
 └── package.json
 ```
+
+## Ejecutar en servidor Linux (DigitalOcean, VPS, etc.)
+
+En el servidor no hay Chrome instalado; usa Chromium:
+
+```bash
+# Ubuntu/Debian
+sudo apt update
+sudo apt install -y chromium-browser
+```
+
+Si el ejecutable está en otra ruta (ej. `/usr/bin/chromium-browser`), define en `.env`:
+
+```env
+CHROME_PATH=/usr/bin/chromium-browser
+```
+
+Luego `pnpm start` o `npm start` como siempre.
 
 ## Notas
 
