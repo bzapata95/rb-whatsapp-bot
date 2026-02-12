@@ -160,7 +160,27 @@ rm -rf .wwebjs_auth/session-*
 pm2 start rb-whatsapp
 ```
 
+**Si tras escanear el QR se queda colgado y no llega a "Bot listo":**
+
+1. El bot ahora espera hasta 90 s tras el escaneo; en servidores lentos puede tardar. Deja que pasen 1–2 minutos.
+2. Borra la caché de WhatsApp Web y vuelve a escanear:
+   ```bash
+   pm2 stop rb-whatsapp
+   pkill -f chromium
+   rm -rf .wwebjs_cache
+   # Opcional: rm -rf .wwebjs_auth/session   (si quieres empezar sesión desde cero)
+   pm2 start rb-whatsapp
+   pm2 logs rb-whatsapp
+   ```
+   Escanea el nuevo QR cuando aparezca.
+3. En algunos VPS/datacenters WhatsApp puede limitar o bloquear; si sigue igual, prueba desde otra red o revisa que el servidor no esté bloqueado por WhatsApp.
+
 ## Notas
 
 - La sesión se guarda en `.wwebjs_auth`; no hace falta escanear el QR cada vez.
 - Si WhatsApp cierra la sesión, borra `.wwebjs_auth` y vuelve a escanear el QR.
+
+
+eliminar chromium o procesos
+
+rm -f /home/deploy/apps/rb-whatsapp-bot/.wwebjs_auth/session/SingletonLock

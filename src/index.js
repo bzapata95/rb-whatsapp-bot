@@ -51,6 +51,7 @@ const chromePath =
 
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
+  authTimeoutMs: 90000, // 90 s para detectar sesión tras escanear QR (servidor lento/headless)
   puppeteer: {
     headless: true,
     args: [
@@ -76,6 +77,14 @@ const client = new Client({
 client.on('qr', (qr) => {
   console.log('Escanea el QR con WhatsApp (Linked Devices):');
   qrcode.generate(qr, { small: true });
+});
+
+client.on('authenticated', () => {
+  console.log('Sesión detectada, cargando WhatsApp...');
+});
+
+client.on('loading_screen', (percent, message) => {
+  console.log('Cargando:', percent, message || '');
 });
 
 client.on('ready', () => {
