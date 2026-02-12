@@ -2,3 +2,4 @@ node_modules/
 .wwebjs_auth/
 .env
 *.log
+.wwebjs_cache/
