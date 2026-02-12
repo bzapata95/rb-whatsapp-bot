@@ -84,11 +84,14 @@ client.on('message', async (msg) => {
   if (!tieneMedia && !cuerpo) return;
 
   const productos = extraerPrecios(cuerpo);
-  if (productos.length === 0 && !tieneMedia) return;
+  const tienePrecio = productos.length > 0;
 
-  let textoDestino = cuerpo;
+  // Mensaje solo texto sin precio: no reenviar
+  if (!tieneMedia && !tienePrecio) return;
 
-  if (productos.length > 0) {
+  // Construir texto en soles cuando hay precio
+  let textoDestino = '';
+  if (tienePrecio) {
     const lineasSoles = [];
     for (const item of productos) {
       let precioSoles;
@@ -105,28 +108,42 @@ client.on('message', async (msg) => {
         precioSoles = totalSoles;
         console.log(item.nombre ? `${item.nombre}: ${desglose}` : desglose);
       }
-      const linea = item.nombre
-        ? `💰 ${item.nombre} Precio: S/ ${precioSoles}`
-        : `💰 Precio: S/ ${precioSoles}`;
-      lineasSoles.push(linea);
+      lineasSoles.push(item.nombre ? `💰 ${item.nombre} Precio: S/ ${precioSoles}` : `💰 Precio: S/ ${precioSoles}`);
     }
     textoDestino = lineasSoles.join('\n');
   }
 
   try {
-    if (tieneMedia) {
+    // 1) Solo foto (sin precio): enviar solo la imagen
+    if (tieneMedia && !tienePrecio) {
       const media = await msg.downloadMedia();
-      if (!media) {
-        console.warn('No se pudo descargar la imagen del mensaje');
-        return;
+      if (media) {
+        await client.sendMessage(GRUPO_DESTINO, media);
+        console.log('Enviado a grupo destino: imagen sola');
+      } else {
+        console.warn('No se pudo descargar la imagen');
       }
-      await client.sendMessage(GRUPO_DESTINO, media, {
-        caption: textoDestino,
-      });
-    } else {
-      await client.sendMessage(GRUPO_DESTINO, textoDestino);
+      return;
     }
-    console.log('Enviado a grupo destino:', textoDestino || 'solo media');
+
+    // 2) Foto + texto con precio (mismo mensaje): enviar imagen con caption en soles
+    if (tieneMedia && tienePrecio) {
+      const media = await msg.downloadMedia();
+      if (media) {
+        await client.sendMessage(GRUPO_DESTINO, media, { caption: textoDestino });
+        console.log('Enviado a grupo destino: imagen + precios', textoDestino);
+      } else {
+        await client.sendMessage(GRUPO_DESTINO, textoDestino);
+        console.log('Enviado a grupo destino: solo texto (falló descarga)', textoDestino);
+      }
+      return;
+    }
+
+    // 3) Solo texto con precio: enviar solo el texto (precios en soles)
+    if (!tieneMedia && tienePrecio) {
+      await client.sendMessage(GRUPO_DESTINO, textoDestino);
+      console.log('Enviado a grupo destino: precios', textoDestino);
+    }
   } catch (err) {
     console.error('Error al reenviar:', err.message);
   }
