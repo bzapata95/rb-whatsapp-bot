@@ -100,7 +100,43 @@ Si el ejecutable está en otra ruta (ej. `/usr/bin/chromium-browser`), define en
 CHROME_PATH=/usr/bin/chromium-browser
 ```
 
-Luego `pnpm start` o `npm start` como siempre.
+### Correr con PM2 en el Droplet
+
+Para que el bot siga corriendo al cerrar SSH y se reinicie si se cae:
+
+```bash
+# En el servidor, dentro de la carpeta del proyecto (ej. ~/apps/rb-whatsapp-bot)
+cd ~/apps/rb-whatsapp-bot   # o la ruta donde clonaste
+
+# Instalar PM2 globalmente (una vez)
+npm install -g pm2
+
+# Crear carpeta de logs (opcional; si no, PM2 usa ~/.pm2/logs/)
+mkdir -p logs
+
+# Arrancar el bot con PM2
+pm2 start ecosystem.config.cjs
+```
+
+**Comandos útiles:**
+
+| Comando | Descripción |
+|--------|-------------|
+| `pm2 status` | Ver si el bot está corriendo |
+| `pm2 logs rb-whatsapp` | Ver logs en vivo (ahí sale el QR si hay que escanear) |
+| `pm2 restart rb-whatsapp` | Reiniciar después de cambiar .env o código |
+| `pm2 stop rb-whatsapp` | Parar el bot |
+| `pm2 delete rb-whatsapp` | Quitar el proceso de PM2 |
+
+**Reinicio automático al reiniciar el servidor:**
+
+```bash
+pm2 startup
+# Ejecuta el comando que te muestre (sudo env ...)
+pm2 save
+```
+
+La primera vez que arranques con PM2, conecta por SSH y ejecuta `pm2 logs rb-whatsapp` para ver el QR y escanearlo con WhatsApp.
 
 ## Notas
 
