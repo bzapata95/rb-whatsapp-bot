@@ -1,0 +1,22 @@
+{
+  "name": "rb-whatsapp",
+  "version": "1.0.0",
+  "description": "Bot de WhatsApp: extrae productos (foto + precio) de un grupo, convierte a Soles y reenvía a otro grupo",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "get-groups": "node src/getGroups.js"
+  },
+  "keywords": ["whatsapp", "bot", "soles", "productos"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.26.0"
+  }
+}
