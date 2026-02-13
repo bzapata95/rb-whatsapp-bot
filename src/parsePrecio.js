@@ -356,12 +356,13 @@ function esPrecioClaro(precio) {
 export function extraerPrecios(texto) {
   if (!texto || typeof texto !== 'string') return [];
 
-  const lineas = texto.split(RE_NEWLINE).map((s) => s.trim()).filter(Boolean);
+  const textoNorm = normalizarTexto(texto);
+  const lineas = textoNorm.split(RE_NEWLINE).map((s) => s.trim()).filter(Boolean);
   const resultados = [];
   let yaHayPrecioClaro = false;
 
   for (const linea of lineas) {
-    // Si ya hubo un precio claro (ej. 34.55) y esta línea es solo tallas (6 7 8.5), no tomar como precios
+    // Si ya hubo un precio claro (ej. 34.55) y esta línea es solo tallas (6 7 8.5, "8, 7 1/2, 8 1/2"), no tomar como precios
     if (yaHayPrecioClaro && lineaSoloTallas(linea)) continue;
     // Caso 1: Separador " y " con nombres: "Tomatodo 5.5 y bowl 7", "Set 16 y plato 18"
     const patronYConNombres = /^([A-Za-zÁ-ÿ]+(?:\s+[A-Za-zÁ-ÿ]+)*?)\s+(\d+(?:[.,]\d+)?)\s+y\s+([A-Za-zÁ-ÿ]+(?:\s+[A-Za-zÁ-ÿ]+)*?)\s+(\d+(?:[.,]\d+)?)(?:\s+(.+))?$/i;
@@ -501,13 +502,44 @@ function lineaSoloTallasOLetras(linea) {
 /** Cualquier salto de línea (WhatsApp puede enviar \n, \r\n o \r). */
 const RE_NEWLINE = /\r?\n|\r/;
 
-/** Normaliza texto por si viene con comas/espacios Unicode desde caption de WhatsApp. */
+/** Patrones "Desde X hasta Y" o "X a Y" para rango de tallas. */
+const RE_RANGO_DESDE_HASTA = /desde\s+(\d+(?:[.,]\d+)?)\s+hasta\s+(\d+(?:[.,]\d+)?)/i;
+const RE_RANGO_A = /(\d+(?:[.,]\d+)?)\s+(?:a|al)\s+(\d+(?:[.,]\d+)?)/i;
+
+/**
+ * Si la línea describe un rango de tallas (ej. "Desde 6.5 hasta 8"), devuelve [min, max] o null.
+ * Solo si ambos números están en rango de talla (2-15).
+ */
+function extraerRangoTallas(linea) {
+  const l = linea.trim();
+  let match = l.match(RE_RANGO_DESDE_HASTA);
+  if (!match) match = l.match(RE_RANGO_A);
+  if (!match) return null;
+  const min = aNumero(match[1]);
+  const max = aNumero(match[2]);
+  if (Number.isNaN(min) || Number.isNaN(max) || min > max) return null;
+  if (min < TALLA_MIN || max > TALLA_MAX) return null;
+  return [min, max];
+}
+
+/** Genera todas las tallas entre min y max en pasos de 0.5 (6.5, 7, 7.5, 8). */
+function expandirRangoTallas(min, max) {
+  const out = [];
+  for (let v = min; v <= max; v += 0.5) {
+    const redondo = Math.round(v * 2) / 2; // evitar 7.0000001
+    if (redondo >= TALLA_MIN && redondo <= TALLA_MAX) out.push(redondo);
+  }
+  return out;
+}
+
+/** Normaliza texto: Unicode y tallas tipo "7 1/2" → 7.5 para que no se tomen como precios. */
 function normalizarTexto(texto) {
   return String(texto)
     .replace(/\u200B|\u200C|\u200D|\uFEFF/g, '') // zero-width chars
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/\u00A0/g, ' ')
+    .replace(/\b(\d+)\s+1\/2\b/g, '$1.5') // "7 1/2" → 7.5, "8 1/2" → 8.5 (tallas, no precios)
     .trim();
 }
 
@@ -533,13 +565,19 @@ export function extraerTallas(texto) {
     if (lineaTienePrecioClaro) yaHayPrecioClaro = true;
 
     if (yaHayPrecioClaro) {
-      if (lineaSoloTallas(linea)) {
-        for (const v of numerosLinea) {
-          if (v >= TALLA_MIN && v <= TALLA_MAX) tallasNumeros.push(v);
-        }
-      } else if (lineaTienePrecioClaro) {
-        for (const v of numerosLinea) {
-          if (esTalla(v)) tallasNumeros.push(v);
+      const rango = extraerRangoTallas(linea);
+      if (rango) {
+        const [min, max] = rango;
+        for (const v of expandirRangoTallas(min, max)) tallasNumeros.push(v);
+      } else {
+        if (lineaSoloTallas(linea)) {
+          for (const v of numerosLinea) {
+            if (v >= TALLA_MIN && v <= TALLA_MAX) tallasNumeros.push(v);
+          }
+        } else if (lineaTienePrecioClaro) {
+          for (const v of numerosLinea) {
+            if (esTalla(v)) tallasNumeros.push(v);
+          }
         }
       }
       // Tallas en letras: misma línea (ej. "14.99 M L XL") o línea siguiente (ej. "14.99" luego "M L XL")
