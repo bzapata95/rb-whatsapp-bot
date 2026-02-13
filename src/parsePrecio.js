@@ -180,6 +180,8 @@ function extraerMultiplesDePreciosDeLinea(linea) {
     const textoSiguiente = l.substring(matchNum.index + matchNum[0].length, matchNum.index + matchNum[0].length + 15);
     const esCantidad = /^\s*(pares?|unidades?|pcs?|piezas?|compartimientos?)\b/i.test(textoSiguiente);
     if (esCantidad) continue;
+    const esTallaCm = /^\s*cm\b/i.test(textoSiguiente); // "25.5 cm" → no es precio
+    if (esTallaCm) continue;
     const tieneDosDecimales = /\.\d{2}$/.test(String(raw).replace(',', '.'));
     numerosCandidatos.push({ valor, raw, tieneDosDecimales });
   }
@@ -325,7 +327,9 @@ function lineaSoloTallas(linea) {
   const l = linea.trim();
   if (!l) return false;
   if (/\$|S\/\s*\d|precio\s*:?\s*\d|USD\s*\d|\d\s*USD/i.test(l)) return false;
-  const numeros = (l.match(/\b\d+(?:[.,]\d+)?\b/g) || []).map((s) => aNumero(s)).filter((n) => !Number.isNaN(n));
+  const rawMatches = l.match(/\b(\d+(?:[.,]\d+)?)\b/g) || [];
+  if (rawMatches.some((raw) => /\.\d{2}$/.test(String(raw).replace(',', '.')))) return false; // "10.00" es precio
+  const numeros = rawMatches.map((s) => aNumero(s)).filter((n) => !Number.isNaN(n));
   if (numeros.length === 0) return false;
   for (const v of numeros) {
     if (v > TALLA_MAX || v < TALLA_MIN) return false;
@@ -337,9 +341,51 @@ function lineaSoloTallas(linea) {
   return true;
 }
 
-/** True si el valor se considera "precio claro" (no talla): >20 o dos decimales (ej. 34.55). */
-function esPrecioClaro(precio) {
-  return precio > 20 || /\.\d{2}$/.test(String(precio));
+/** True si el valor se considera "precio claro" (no talla): >20 o dos decimales (ej. 34.55, 10.00). */
+function esPrecioClaro(precio, strNumero) {
+  if (precio > 20) return true;
+  const str = strNumero !== undefined ? String(strNumero).replace(',', '.') : String(precio);
+  if (/\.\d{2}$/.test(str)) return true;
+  if (precio > 15) return true;
+  return false;
+}
+
+/** True si la línea es solo talla(s) en cm (ej. "25.5 cm" o "25 cm, 26 cm"). No tomar como precio. */
+function lineaEsTallaCm(linea) {
+  const l = linea.trim();
+  if (!l) return false;
+  return /^\d+(?:[.,]\d+)?\s*cm(\s*[,y]\s*\d+(?:[.,]\d+)?\s*cm)*\s*$/i.test(l);
+}
+
+/** True si la línea es talla de bebé primero (ej. "24 M", "24 meses"). No tomar el número como precio. */
+function lineaEsTallaBebePrimero(linea) {
+  const l = linea.trim();
+  if (!l) return false;
+  return /^\d{1,2}\s*M\s*$/i.test(l) || /^\d{1,2}\s*meses?\s*$/i.test(l);
+}
+
+/** True si la línea es rango de talla/edad (ej. "8-10", "2-4" para niño). No tomar 8 y 10 como precios. */
+function lineaEsRangoTallaEdad(linea) {
+  const l = linea.trim();
+  if (!l) return false;
+  const m = l.match(/^(\d{1,2})-(\d{1,2})\s*$/);
+  if (!m) return false;
+  const a = aNumero(m[1]);
+  const b = aNumero(m[2]);
+  if (Number.isNaN(a) || Number.isNaN(b) || a > b) return false;
+  return a >= 0 && b <= 20; // rango típico talla/edad niño (0-20)
+}
+
+/** Extrae valores "X cm" de una línea (ej. "25.5 cm" → ["25.5 cm"]). */
+function extraerTallasCmDeLinea(linea) {
+  const out = [];
+  const re = /\b(\d+(?:[.,]\d+)?)\s*cm\b/gi;
+  let m;
+  while ((m = re.exec(linea)) !== null) {
+    const num = aNumero(m[1]);
+    if (!Number.isNaN(num) && num > 0) out.push(`${num} cm`);
+  }
+  return out;
 }
 
 /**
@@ -362,8 +408,10 @@ export function extraerPrecios(texto) {
   let yaHayPrecioClaro = false;
 
   for (const linea of lineas) {
-    // Si ya hubo un precio claro (ej. 34.55) y esta línea es solo tallas (6 7 8.5, "8, 7 1/2, 8 1/2"), no tomar como precios
-    if (yaHayPrecioClaro && lineaSoloTallas(linea)) continue;
+    // Talla primero (ej. "24 M") o rango edad (ej. "8-10" para NIÑO): no tomar como precios
+    if (lineaEsTallaBebePrimero(linea) || lineaEsRangoTallaEdad(linea)) continue;
+    // Si ya hubo un precio claro y esta línea es solo tallas (números, "7 1/2", o "25.5 cm"), no tomar como precios
+    if (yaHayPrecioClaro && (lineaSoloTallas(linea) || lineaEsTallaCm(linea))) continue;
     // Caso 1: Separador " y " con nombres: "Tomatodo 5.5 y bowl 7", "Set 16 y plato 18"
     const patronYConNombres = /^([A-Za-zÁ-ÿ]+(?:\s+[A-Za-zÁ-ÿ]+)*?)\s+(\d+(?:[.,]\d+)?)\s+y\s+([A-Za-zÁ-ÿ]+(?:\s+[A-Za-zÁ-ÿ]+)*?)\s+(\d+(?:[.,]\d+)?)(?:\s+(.+))?$/i;
     const matchYNombres = linea.match(patronYConNombres);
@@ -556,27 +604,47 @@ export function extraerTallas(texto) {
   const lineas = textoNorm.split(RE_NEWLINE).map((s) => s.trim()).filter(Boolean);
   const tallasNumeros = [];
   const tallasLetras = new Set();
+  const tallasCm = [];
+  const tallasPrimero = []; // "24 M" (talla antes del precio)
+  const tallasRangoEdad = []; // "8-10" (rango edad niño)
   let yaHayPrecioClaro = false;
 
   for (const linea of lineas) {
-    const numerosLinea = (linea.match(/\b\d+(?:[.,]\d+)?\b/g) || []).map((s) => aNumero(s)).filter((n) => !Number.isNaN(n));
-    const lineaTienePrecioClaro = numerosLinea.some((v) => esPrecioClaro(v));
+    if (lineaEsTallaBebePrimero(linea)) {
+      tallasPrimero.push(linea);
+      continue;
+    }
+    if (lineaEsRangoTallaEdad(linea)) {
+      tallasRangoEdad.push(linea);
+      continue;
+    }
+    const rawNumeros = (linea.match(/\b(\d+(?:[.,]\d+)?)\b/g) || []);
+    const numerosLinea = rawNumeros.map((s) => aNumero(s)).filter((n) => !Number.isNaN(n));
+    const lineaTienePrecioClaro = rawNumeros.some((raw, i) => esPrecioClaro(numerosLinea[i], raw));
 
     if (lineaTienePrecioClaro) yaHayPrecioClaro = true;
 
     if (yaHayPrecioClaro) {
-      const rango = extraerRangoTallas(linea);
-      if (rango) {
-        const [min, max] = rango;
-        for (const v of expandirRangoTallas(min, max)) tallasNumeros.push(v);
+      for (const cm of extraerTallasCmDeLinea(linea)) tallasCm.push(cm);
+      if (lineaEsTallaCm(linea)) {
+        // línea solo "25.5 cm": no extraer números como tallas numéricas
       } else {
-        if (lineaSoloTallas(linea)) {
-          for (const v of numerosLinea) {
-            if (v >= TALLA_MIN && v <= TALLA_MAX) tallasNumeros.push(v);
-          }
-        } else if (lineaTienePrecioClaro) {
-          for (const v of numerosLinea) {
-            if (esTalla(v)) tallasNumeros.push(v);
+        const rango = extraerRangoTallas(linea);
+        if (rango) {
+          const [min, max] = rango;
+          for (const v of expandirRangoTallas(min, max)) tallasNumeros.push(v);
+        } else {
+          if (lineaSoloTallas(linea)) {
+            for (const v of numerosLinea) {
+              if (v >= TALLA_MIN && v <= TALLA_MAX) tallasNumeros.push(v);
+            }
+          } else if (lineaTienePrecioClaro) {
+            for (let i = 0; i < numerosLinea.length; i++) {
+              const v = numerosLinea[i];
+              const raw = rawNumeros[i];
+              if (esPrecioClaro(v, raw)) continue; // "10.00" es precio, no talla
+              if (esTalla(v)) tallasNumeros.push(v);
+            }
           }
         }
       }
@@ -591,7 +659,10 @@ export function extraerTallas(texto) {
 
   const nums = [...new Set(tallasNumeros)].sort((a, b) => a - b);
   const letrasOrdenadas = TALLAS_LETRAS.filter((t) => tallasLetras.has(t));
-  return [...nums, ...letrasOrdenadas];
+  const cmUnicas = [...new Set(tallasCm)];
+  const primeroUnicas = yaHayPrecioClaro ? [...new Set(tallasPrimero)] : [];
+  const rangoEdadUnicas = yaHayPrecioClaro ? [...new Set(tallasRangoEdad)] : [];
+  return [...nums, ...cmUnicas, ...letrasOrdenadas, ...primeroUnicas, ...rangoEdadUnicas];
 }
 
 export default extraerPrecio;
