@@ -5,7 +5,7 @@ import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = pkg;
 import qrcode from 'qrcode-terminal';
 import { config } from '../config.js';
-import { extraerPrecios } from './parsePrecio.js';
+import { extraerPrecios, extraerTallas } from './parsePrecio.js';
 import { calcularPrecioVenta } from './calcularPrecioVenta.js';
 
 const GRUPO_ORIGEN = config.GRUPO_ORIGEN_ID;
@@ -137,7 +137,19 @@ client.on('message', async (msg) => {
   if (idChat !== GRUPO_ORIGEN) return;
 
   const tieneMedia = msg.hasMedia;
-  const cuerpo = msg.body?.trim() || '';
+
+  // Con imagen, el caption a veces llega después: recargar mensaje para obtener texto completo (varias líneas)
+  let cuerpo = (msg.body && String(msg.body).trim()) || '';
+  if (tieneMedia) {
+    if (!cuerpo && msg._data?.caption) cuerpo = String(msg._data.caption).trim();
+    try {
+      const recargado = await msg.reload();
+      if (recargado && recargado.body) {
+        const bodyRecargado = String(recargado.body).trim();
+        if (bodyRecargado.length > cuerpo.length) cuerpo = bodyRecargado;
+      }
+    } catch (_) {}
+  }
 
   // Log del mensaje recibido del grupo origen
   console.log('\n=== MENSAJE RECIBIDO DEL GRUPO ORIGEN ===');
@@ -150,6 +162,9 @@ client.on('message', async (msg) => {
 
   const productos = extraerPrecios(cuerpo);
   const tienePrecio = productos.length > 0;
+  const tallas = extraerTallas(cuerpo);
+  if (tallas.length > 0) console.log('Tallas extraídas:', tallas.join(', '));
+  else if (tienePrecio && cuerpo.includes('\n')) console.log('Tallas extraídas: (ninguna; revisar si hay segunda línea con números)');
 
   // Mensaje solo texto sin precio: no reenviar
   if (!tieneMedia && !tienePrecio) return;
@@ -184,7 +199,10 @@ client.on('message', async (msg) => {
       }
       lineasSoles.push(item.nombre ? `💰 ${item.nombre} Precio: S/ ${precioSoles}` : `💰 Precio: S/ ${precioSoles}`);
     }
-    textoDestino = lineasSoles.join('\n');
+    if (tallas.length > 0) {
+      lineasSoles.push(`📏 Tallas disponibles: ${tallas.join(', ')}`);
+    }
+    textoDestino = lineasSoles.join('\n'); // dos líneas: precio + tallas
   }
 
   try {
@@ -211,8 +229,8 @@ client.on('message', async (msg) => {
         console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
         console.log('Tipo: Imagen + precios convertidos');
         console.log('Media tipo:', media.mimetype);
-        console.log('Caption enviado:');
-        console.log(textoDestino);
+        console.log('Caption enviado (cada línea):');
+        textoDestino.split(/\r?\n|\r/).forEach((l, i) => console.log(`  ${i + 1}. ${l}`));
         console.log('================================\n');
       } else {
         await client.sendMessage(GRUPO_DESTINO, textoDestino);
