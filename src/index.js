@@ -38,16 +38,33 @@ try {
 } catch (_) {}
 
 // Ruta a Chrome/Chromium (env CHROME_PATH o PUPPETEER_EXECUTABLE_PATH para override)
-const chromePath =
-  process.env.CHROME_PATH ||
-  process.env.PUPPETEER_EXECUTABLE_PATH ||
-  (process.platform === 'darwin'
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-    : process.platform === 'win32'
-      ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-      : process.platform === 'linux'
-        ? '/usr/bin/chromium-browser'
-        : undefined);
+function resolveChromePath() {
+  if (process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH) {
+    return process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+  if (process.platform === 'darwin') {
+    return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  }
+  if (process.platform === 'win32') {
+    return 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  }
+  if (process.platform === 'linux') {
+    const paths = [
+      '/usr/bin/chromium-browser',
+      '/usr/bin/chromium',
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+    ];
+    for (const p of paths) {
+      try {
+        if (fs.existsSync(p)) return p;
+      } catch (_) {}
+    }
+    return paths[0];
+  }
+  return undefined;
+}
+const chromePath = resolveChromePath();
 
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
@@ -122,6 +139,13 @@ client.on('message', async (msg) => {
   const tieneMedia = msg.hasMedia;
   const cuerpo = msg.body?.trim() || '';
 
+  // Log del mensaje recibido del grupo origen
+  console.log('\n=== MENSAJE RECIBIDO DEL GRUPO ORIGEN ===');
+  console.log('Grupo:', nombreGrupo);
+  console.log('Tiene imagen/media:', tieneMedia);
+  console.log('Texto original:', cuerpo || '(sin texto)');
+  console.log('=========================================\n');
+
   if (!tieneMedia && !cuerpo) return;
 
   const productos = extraerPrecios(cuerpo);
@@ -137,8 +161,17 @@ client.on('message', async (msg) => {
     for (const item of productos) {
       let precioSoles;
       if (item.enSoles) {
+        // Ya está en soles
         precioSoles = Math.ceil(item.precio);
+        console.log(item.nombre ? `${item.nombre}: Ya en soles S/ ${precioSoles}` : `Ya en soles S/ ${precioSoles}`);
+      } else if (item.conSignoDolar) {
+        // Tiene signo $ explícito: solo aplicar tipo de cambio (sin fórmula)
+        precioSoles = Math.ceil(item.precio * TIPO_CAMBIO);
+        console.log(item.nombre 
+          ? `${item.nombre}: Conversión directa $${item.precio} × ${TIPO_CAMBIO} = S/ ${precioSoles}`
+          : `Conversión directa $${item.precio} × ${TIPO_CAMBIO} = S/ ${precioSoles}`);
       } else {
+        // Sin signo $: aplicar fórmula completa (impuesto, shopper, ganancia, envío)
         const { totalSoles, desglose } = calcularPrecioVenta(item.precio, {
           porcentajeImpuesto: config.PORCENTAJE_IMPUESTO,
           porcentajeShopper: config.PORCENTAJE_SHOPPER,
@@ -160,7 +193,10 @@ client.on('message', async (msg) => {
       const media = await msg.downloadMedia();
       if (media) {
         await client.sendMessage(GRUPO_DESTINO, media);
-        console.log('Enviado a grupo destino: imagen sola');
+        console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
+        console.log('Tipo: Imagen sola (sin precio)');
+        console.log('Media tipo:', media.mimetype);
+        console.log('================================\n');
       } else {
         console.warn('No se pudo descargar la imagen');
       }
@@ -172,10 +208,19 @@ client.on('message', async (msg) => {
       const media = await msg.downloadMedia();
       if (media) {
         await client.sendMessage(GRUPO_DESTINO, media, { caption: textoDestino });
-        console.log('Enviado a grupo destino: imagen + precios', textoDestino);
+        console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
+        console.log('Tipo: Imagen + precios convertidos');
+        console.log('Media tipo:', media.mimetype);
+        console.log('Caption enviado:');
+        console.log(textoDestino);
+        console.log('================================\n');
       } else {
         await client.sendMessage(GRUPO_DESTINO, textoDestino);
-        console.log('Enviado a grupo destino: solo texto (falló descarga)', textoDestino);
+        console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
+        console.log('Tipo: Solo texto (falló descarga de imagen)');
+        console.log('Texto enviado:');
+        console.log(textoDestino);
+        console.log('================================\n');
       }
       return;
     }
@@ -183,7 +228,11 @@ client.on('message', async (msg) => {
     // 3) Solo texto con precio: enviar solo el texto (precios en soles)
     if (!tieneMedia && tienePrecio) {
       await client.sendMessage(GRUPO_DESTINO, textoDestino);
-      console.log('Enviado a grupo destino: precios', textoDestino);
+      console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
+      console.log('Tipo: Solo texto con precios convertidos');
+      console.log('Texto enviado:');
+      console.log(textoDestino);
+      console.log('================================\n');
     }
   } catch (err) {
     console.error('Error al reenviar:', err.message);
