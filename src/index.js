@@ -15,6 +15,10 @@ const MONEDA_ORIGEN = config.MONEDA_ORIGEN;
 
 const faltaConfigurarGrupos = !GRUPO_ORIGEN || !GRUPO_DESTINO;
 
+/** Mapa id mensaje origen → id mensaje destino: para borrar en destino cuando eliminen en origen. */
+const MAPA_ORIGEN_DESTINO = new Map();
+const MAX_MAPA_MENSAJES = 500;
+
 // Quitar bloqueo de Chromium si quedó de otro proceso/servidor (evita "profile is in use by process X on another computer")
 try {
   const authDir = path.join(process.cwd(), '.wwebjs_auth');
@@ -113,6 +117,34 @@ client.on('ready', () => {
   }
 });
 
+function guardarMapeoOrigenDestino(idOrigen, idDestino) {
+  MAPA_ORIGEN_DESTINO.set(idOrigen, idDestino);
+  if (MAPA_ORIGEN_DESTINO.size > MAX_MAPA_MENSAJES) {
+    const primeraClave = MAPA_ORIGEN_DESTINO.keys().next().value;
+    MAPA_ORIGEN_DESTINO.delete(primeraClave);
+  }
+}
+
+// Si eliminan un mensaje en el grupo origen, eliminar también el mensaje correspondiente en el grupo destino
+client.on('message_revoke_everyone', async (message, revokedMsg) => {
+  if (faltaConfigurarGrupos) return;
+  try {
+    const chat = await message.getChat();
+    if (!chat.isGroup || chat.id._serialized !== GRUPO_ORIGEN) return;
+    const idOrigen = (revokedMsg && revokedMsg.id && revokedMsg.id._serialized) || message.id._serialized;
+    const idDestino = MAPA_ORIGEN_DESTINO.get(idOrigen);
+    if (!idDestino) return;
+    const msgDestino = await client.getMessageById(idDestino);
+    if (msgDestino) {
+      await msgDestino.delete(true);
+      console.log('\n>>> MENSAJE ELIMINADO EN ORIGEN → eliminado también en grupo destino <<<\n');
+    }
+    MAPA_ORIGEN_DESTINO.delete(idOrigen);
+  } catch (err) {
+    console.warn('Error al eliminar mensaje en destino (revoke):', err.message);
+  }
+});
+
 client.on('message', async (msg) => {
   let chat;
   try {
@@ -205,12 +237,15 @@ client.on('message', async (msg) => {
     textoDestino = lineasSoles.join('\n'); // dos líneas: precio + tallas
   }
 
+  const idOrigen = msg.id._serialized;
+
   try {
     // 1) Solo foto (sin precio): enviar solo la imagen
     if (tieneMedia && !tienePrecio) {
       const media = await msg.downloadMedia();
       if (media) {
-        await client.sendMessage(GRUPO_DESTINO, media);
+        const sent = await client.sendMessage(GRUPO_DESTINO, media);
+        if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
         console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
         console.log('Tipo: Imagen sola (sin precio)');
         console.log('Media tipo:', media.mimetype);
@@ -225,7 +260,8 @@ client.on('message', async (msg) => {
     if (tieneMedia && tienePrecio) {
       const media = await msg.downloadMedia();
       if (media) {
-        await client.sendMessage(GRUPO_DESTINO, media, { caption: textoDestino });
+        const sent = await client.sendMessage(GRUPO_DESTINO, media, { caption: textoDestino });
+        if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
         console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
         console.log('Tipo: Imagen + precios convertidos');
         console.log('Media tipo:', media.mimetype);
@@ -233,7 +269,8 @@ client.on('message', async (msg) => {
         textoDestino.split(/\r?\n|\r/).forEach((l, i) => console.log(`  ${i + 1}. ${l}`));
         console.log('================================\n');
       } else {
-        await client.sendMessage(GRUPO_DESTINO, textoDestino);
+        const sent = await client.sendMessage(GRUPO_DESTINO, textoDestino);
+        if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
         console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
         console.log('Tipo: Solo texto (falló descarga de imagen)');
         console.log('Texto enviado:');
@@ -245,7 +282,8 @@ client.on('message', async (msg) => {
 
     // 3) Solo texto con precio: enviar solo el texto (precios en soles)
     if (!tieneMedia && tienePrecio) {
-      await client.sendMessage(GRUPO_DESTINO, textoDestino);
+      const sent = await client.sendMessage(GRUPO_DESTINO, textoDestino);
+      if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
       console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
       console.log('Tipo: Solo texto con precios convertidos');
       console.log('Texto enviado:');
