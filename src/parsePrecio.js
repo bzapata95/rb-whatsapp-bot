@@ -10,6 +10,7 @@
  * - En soles: "S/ 20", "S/50"
  * - Con USD: "50 USD", "USD 50"
  * - Decimales: "27.99", "3.5", "5.5"
+ * - Precio + stock por tallas: "37, solo 1 en 7 y 5.5" (solo 37 es precio; 7 y 5.5 son tallas)
  * 
  * IMPORTANTE: Si el precio tiene signo $ explícito ($28 o 28$), marca conSignoDolar=true
  * para aplicar solo conversión directa (sin fórmula de costos/márgenes).
@@ -364,6 +365,35 @@ function lineaEsTallaBebePrimero(linea) {
   return /^\d{1,2}\s*M\s*$/i.test(l) || /^\d{1,2}\s*meses?\s*$/i.test(l);
 }
 
+/** True si la línea describe stock por talla: "solo 1 en 7 y 5.5", "solo 2 en 8". Los números tras "en" son tallas, no precios. */
+function lineaEsStockPorTalla(linea) {
+  const l = linea.trim();
+  return /solo\s+\d+\s+en\s+\d/i.test(l);
+}
+
+/** Extrae precio de línea con formato "37, solo 1 en 7 y 5.5" (precio + stock por tallas). Solo devuelve el precio. */
+function extraerPrecioDeLineaConStockTallas(linea) {
+  const l = linea.trim();
+  // "37, solo 1 en 7 y 5.5" o "37 solo 1 en 7 y 5.5" → precio es el primer número
+  const match = l.match(/^(\d+(?:[.,]\d+)?)\s*[,.]?\s*solo\s+\d+\s+en\s+/i);
+  if (!match) return null;
+  const valor = aNumero(match[1]);
+  if (Number.isNaN(valor) || valor <= 0) return null;
+  return { precio: valor, enSoles: false, conSignoDolar: false, nombre: undefined };
+}
+
+/** True si alguna línea del mensaje tiene un número que parece precio claro (XX.XX o >20). */
+function algunaLineaTienePrecioClaro(lineas) {
+  for (const l of lineas) {
+    const nums = (l.match(/\b(\d+(?:[.,]\d+)?)\b/g) || []);
+    for (const raw of nums) {
+      const v = aNumero(raw);
+      if (!Number.isNaN(v) && (v > 20 || /\.\d{2}$/.test(String(raw).replace(',', '.')))) return true;
+    }
+  }
+  return false;
+}
+
 /** True si la línea es rango de talla/edad (ej. "8-10", "2-4" para niño). No tomar 8 y 10 como precios. */
 function lineaEsRangoTallaEdad(linea) {
   const l = linea.trim();
@@ -393,6 +423,8 @@ function extraerTallasCmDeLinea(linea) {
  * Maneja múltiples casos:
  * - Varias líneas: cada línea es un producto
  * - Precio arriba y tallas abajo: "34.55" luego "6 7 8.5" → solo 34.55 es precio
+ * - Talla primero, precio abajo: "8 1/2" luego "9.29" → solo 9.29 es precio
+ * - Precio + stock por tallas: "37, solo 1 en 7 y 5.5" → solo 37 es precio (7 y 5.5 son tallas)
  * - Separador " / ": "78 color entero / metálico 84"
  * - Separador " y ": "16 y 18", "5.5 y 7 (taper)"
  * - Múltiples productos en una línea: "Tomatodo 6 (plástico) mochila 18"
@@ -412,6 +444,17 @@ export function extraerPrecios(texto) {
     if (lineaEsTallaBebePrimero(linea) || lineaEsRangoTallaEdad(linea)) continue;
     // Si ya hubo un precio claro y esta línea es solo tallas (números, "7 1/2", o "25.5 cm"), no tomar como precios
     if (yaHayPrecioClaro && (lineaSoloTallas(linea) || lineaEsTallaCm(linea))) continue;
+    // Talla primero, precio abajo: "8 1/2" luego "9.29" → no tomar 8.5 como precio
+    if (!yaHayPrecioClaro && lineaSoloTallas(linea) && algunaLineaTienePrecioClaro(lineas)) continue;
+    // Caso: Precio + stock por tallas "37, solo 1 en 7 y 5.5" → solo 37 es precio; 7 y 5.5 son tallas
+    if (lineaEsStockPorTalla(linea)) {
+      const r = extraerPrecioDeLineaConStockTallas(linea);
+      if (r) {
+        resultados.push(r);
+        if (esPrecioClaro(r.precio)) yaHayPrecioClaro = true;
+      }
+      continue;
+    }
     // Caso 1: Separador " y " con nombres: "Tomatodo 5.5 y bowl 7", "Set 16 y plato 18"
     const patronYConNombres = /^([A-Za-zÁ-ÿ]+(?:\s+[A-Za-zÁ-ÿ]+)*?)\s+(\d+(?:[.,]\d+)?)\s+y\s+([A-Za-zÁ-ÿ]+(?:\s+[A-Za-zÁ-ÿ]+)*?)\s+(\d+(?:[.,]\d+)?)(?:\s+(.+))?$/i;
     const matchYNombres = linea.match(patronYConNombres);
@@ -594,6 +637,7 @@ function normalizarTexto(texto) {
 /**
  * Extrae tallas del mensaje: numéricas (6, 9.5) y en letras (M, L, XL).
  * En la misma línea que el precio o en líneas siguientes (ej. "14.99" luego "M L XL").
+ * También talla primero, precio abajo (ej. "8 1/2" luego "9.29" → talla 8.5).
  * @param {string} texto - Cuerpo del mensaje
  * @returns {(number|string)[]} Tallas encontradas (números ordenados, luego letras en orden S→XL)
  */
@@ -623,6 +667,13 @@ export function extraerTallas(texto) {
     const lineaTienePrecioClaro = rawNumeros.some((raw, i) => esPrecioClaro(numerosLinea[i], raw));
 
     if (lineaTienePrecioClaro) yaHayPrecioClaro = true;
+
+    // Talla primero, precio abajo: "8 1/2" luego "9.29" → extraer 8.5 como talla aunque venga antes del precio
+    if (!yaHayPrecioClaro && lineaSoloTallas(linea) && algunaLineaTienePrecioClaro(lineas)) {
+      for (const v of numerosLinea) {
+        if (v >= TALLA_MIN && v <= TALLA_MAX) tallasNumeros.push(v);
+      }
+    }
 
     if (yaHayPrecioClaro) {
       for (const cm of extraerTallasCmDeLinea(linea)) tallasCm.push(cm);
