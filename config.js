@@ -26,6 +26,27 @@ export const config = {
 
   // ID del grupo al que se ENVÍAN los productos ya con precio en S/
   GRUPO_DESTINO_ID: process.env.GRUPO_DESTINO_ID || '',
+
+  // Mensaje de bienvenida cuando agregan usuarios al grupo destino (en .env usa \n para saltos de línea)
+  MENSAJE_BIENVENIDA: process.env.MENSAJE_BIENVENIDA
+    ? String(process.env.MENSAJE_BIENVENIDA).replace(/\\n/g, '\n')
+    : `¡Bienvenido(s) al grupo! 🎉
+
+🛍️🇺🇸 PASOS PARA COMPRAR EN R&B INTERNATIONAL IMPORT 🇺🇸🛍️
+
+📲 Las compras se realizan SOLO por CHAT PRIVADO de WhatsApp
+
+1️⃣ Mantente atent@ a las compras en vivo en el grupo 🎥
+2️⃣ Observa los productos en tiempo real 📦✨
+3️⃣ Cuando veas algo que te guste, escríbenos "MÍO" por chat privado 💬
+4️⃣ Te confirmamos precio y disponibilidad 💸
+5️⃣ Para separar tu pedido, se debe abonar el 50% del valor del producto ✅
+6️⃣ Envía tu comprobante de pago por chat privado 📲
+7️⃣ El 50% restante se cancela según coordinación
+8️⃣ ⏳ Tiempo de entrega: 2 a 3 semanas 📦✈️
+
+Si tienes alguna duda, escríbenos con confianza 💕
+¡Disfruta la experiencia y felices compras! ✈️🛍️`,
 };
 
 export default config;

@@ -125,6 +125,24 @@ function guardarMapeoOrigenDestino(idOrigen, idDestino) {
   }
 }
 
+// Cuando agregan usuario(s) al grupo destino: enviar mensaje de bienvenida con pasos para comprar
+client.on('group_join', async (notification) => {
+  if (faltaConfigurarGrupos) return;
+  try {
+    const chat = await notification.getChat();
+    if (!chat.isGroup || chat.id._serialized !== GRUPO_DESTINO) return;
+    const mensaje = config.MENSAJE_BIENVENIDA;
+    await notification.reply(mensaje);
+    const recipients = await notification.getRecipients();
+    const nombres = recipients.map((c) => c.pushname || c.name || c.number).filter(Boolean);
+    console.log('\n>>> BIENVENIDA ENVIADA (grupo destino) <<<');
+    console.log('Usuarios agregados:', nombres.length ? nombres.join(', ') : notification.recipientIds?.length || '?');
+    console.log('================================\n');
+  } catch (err) {
+    console.warn('Error al enviar mensaje de bienvenida:', err.message);
+  }
+});
+
 // Si eliminan un mensaje en el grupo origen, eliminar también el mensaje correspondiente en el grupo destino
 client.on('message_revoke_everyone', async (message, revokedMsg) => {
   if (faltaConfigurarGrupos) return;
