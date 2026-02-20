@@ -234,21 +234,6 @@ client.on('message', async (msg) => {
   if (tallas.length > 0) console.log('Tallas extraídas:', tallas.join(', '));
   else if (tienePrecio && cuerpo.includes('\n')) console.log('Tallas extraídas: (ninguna; revisar si hay segunda línea con números)');
 
-  // Mensaje solo texto sin precio: no reenviar
-  if (!tieneMedia && !tienePrecio) {
-    logMensajeProcesado({
-      receivedAt,
-      grupo: nombreGrupo,
-      tieneMedia,
-      textoOriginal: cuerpo,
-      productos: productos.map((p) => ({ precio: p.precio, enSoles: p.enSoles, nombre: p.nombre })),
-      tallas,
-      tipoEnvio: null,
-      razonNoEnvio: 'sin_precio_extractado',
-    });
-    return;
-  }
-
   // Construir texto en soles cuando hay precio
   let textoDestino = '';
   if (tienePrecio) {
@@ -306,20 +291,24 @@ client.on('message', async (msg) => {
       lineasSoles.push(`⚠️ ${alertasStock.join(' | ')}`);
     }
     textoDestino = lineasSoles.join('\n');
+  } else {
+    textoDestino = cuerpo;
   }
 
   const idOrigen = msg.id._serialized;
 
   try {
-    // 1) Solo foto (sin precio): enviar solo la imagen
+    // 1) Solo foto (sin precio): enviar imagen con el texto original como caption si hay
     if (tieneMedia && !tienePrecio) {
       const media = await msg.downloadMedia();
       if (media) {
-        const sent = await client.sendMessage(GRUPO_DESTINO, media);
+        const caption = (cuerpo && cuerpo.trim()) ? cuerpo.trim() : undefined;
+        const sent = await client.sendMessage(GRUPO_DESTINO, media, caption ? { caption } : undefined);
         const sentAt = new Date().toISOString();
         if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
         console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
         console.log('Tipo: Imagen sola (sin precio)');
+        if (caption) console.log('Caption:', caption);
         console.log('Media tipo:', media.mimetype);
         console.log('================================\n');
         logMensajeProcesado({
@@ -330,7 +319,7 @@ client.on('message', async (msg) => {
           textoOriginal: cuerpo,
           productos: [],
           tallas,
-          textoEnviado: null,
+          textoEnviado: caption ?? null,
           tipoEnvio: 'imagen_sola',
           mediaTipo: media.mimetype,
         });
@@ -416,6 +405,28 @@ client.on('message', async (msg) => {
         tieneMedia,
         textoOriginal: cuerpo,
         productos: productos.map((p) => ({ precio: p.precio, enSoles: p.enSoles, nombre: p.nombre })),
+        tallas,
+        textoEnviado: textoDestino,
+        tipoEnvio: 'solo_texto',
+      });
+    }
+
+    // 4) Solo texto sin precio (ej. "Tallas disponibles"): reenviar el texto tal cual
+    if (!tieneMedia && !tienePrecio && textoDestino) {
+      const sent = await client.sendMessage(GRUPO_DESTINO, textoDestino);
+      const sentAt = new Date().toISOString();
+      if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
+      console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
+      console.log('Tipo: Solo texto (sin precio)');
+      console.log('Texto enviado:', textoDestino);
+      console.log('================================\n');
+      logMensajeProcesado({
+        receivedAt,
+        sentAt,
+        grupo: nombreGrupo,
+        tieneMedia,
+        textoOriginal: cuerpo,
+        productos: [],
         tallas,
         textoEnviado: textoDestino,
         tipoEnvio: 'solo_texto',

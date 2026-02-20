@@ -707,7 +707,8 @@ function esTalla(valor) {
 
 /** Tallas en letras (ropa): orden de aparición para mostrar. Coincidir de más largo a más corto (XXL antes de XL). */
 const TALLAS_LETRAS = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', '3XL', '4XL'];
-const RE_TALLA_LETRA = /\b(XXS|XS|S|M|L|XXL|2XL|3XL|4XL|XL)\b/gi;
+// (?<!@) en S: evita matchear la "s" de "chic@s" como talla (el @ rompe la palabra y \bS\b matchearía mal)
+const RE_TALLA_LETRA = /\b(XXS|XS|(?<!@)S|M|L|XXL|2XL|3XL|4XL|XL)\b/gi;
 
 /** Extrae tallas en letras de una línea (M, L, XL, etc.). */
 function extraerTallasLetrasDeLinea(linea) {
