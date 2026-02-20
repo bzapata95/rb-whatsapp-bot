@@ -126,6 +126,54 @@ function guardarMapeoOrigenDestino(idOrigen, idDestino) {
   }
 }
 
+/** Construye el texto a enviar al destino a partir del cuerpo: precios a soles, tallas, alertas. */
+function construirTextoDestino(cuerpo) {
+  const productos = extraerPrecios(cuerpo);
+  const tienePrecio = productos.length > 0;
+  const tallas = extraerTallas(cuerpo);
+  const alertasStock = extraerAlertasStock(cuerpo);
+  if (!tienePrecio) return { textoDestino: cuerpo, productos: [], tallas, alertasStock, tienePrecio: false };
+  const lineasSoles = [];
+  for (const item of productos) {
+    let precioSoles;
+    let precioRegularSoles = null;
+    if (item.enSoles) {
+      precioSoles = Math.ceil(item.precio);
+      if (item.precioRegular) precioRegularSoles = Math.ceil(item.precioRegular);
+    } else if (item.conSignoDolar) {
+      precioSoles = Math.ceil(item.precio * TIPO_CAMBIO);
+      if (item.precioRegular) precioRegularSoles = Math.ceil(item.precioRegular * TIPO_CAMBIO);
+    } else {
+      const { totalSoles } = calcularPrecioVenta(item.precio, {
+        porcentajeImpuesto: config.PORCENTAJE_IMPUESTO,
+        porcentajeShopper: config.PORCENTAJE_SHOPPER,
+        porcentajeGanancia: config.PORCENTAJE_GANANCIA,
+        envioUSD: config.ENVIO_USD,
+        tipoCambioSoles: TIPO_CAMBIO,
+      });
+      precioSoles = totalSoles;
+      if (item.precioRegular) {
+        const { totalSoles: regSoles } = calcularPrecioVenta(item.precioRegular, {
+          porcentajeImpuesto: config.PORCENTAJE_IMPUESTO,
+          porcentajeShopper: config.PORCENTAJE_SHOPPER,
+          porcentajeGanancia: config.PORCENTAJE_GANANCIA,
+          envioUSD: config.ENVIO_USD,
+          tipoCambioSoles: TIPO_CAMBIO,
+        });
+        precioRegularSoles = regSoles;
+      }
+    }
+    if (precioRegularSoles != null) {
+      lineasSoles.push(`💰 Precio: S/ ${precioSoles} – Antes S/ ${precioRegularSoles}`);
+    } else {
+      lineasSoles.push(item.nombre ? `💰 ${item.nombre} Precio: S/ ${precioSoles}` : `💰 Precio: S/ ${precioSoles}`);
+    }
+  }
+  if (tallas.length > 0) lineasSoles.push(`📏 Tallas disponibles: ${tallas.join(', ')}`);
+  if (alertasStock.length > 0) lineasSoles.push(`⚠️ ${alertasStock.join(' | ')}`);
+  return { textoDestino: lineasSoles.join('\n'), productos, tallas, alertasStock, tienePrecio: true };
+}
+
 // Cuando agregan usuario(s) al grupo destino: enviar mensaje de bienvenida con pasos para comprar
 client.on('group_join', async (notification) => {
   if (faltaConfigurarGrupos) return;
@@ -164,6 +212,30 @@ client.on('message_revoke_everyone', async (message, revokedMsg) => {
     MAPA_ORIGEN_DESTINO.delete(idOrigen);
   } catch (err) {
     console.warn('Error al eliminar mensaje en destino (revoke):', err.message);
+  }
+});
+
+// Si editan un mensaje en el grupo origen, editar el correspondiente en el grupo destino
+client.on('message_edit', async (message, newBody, prevBody) => {
+  if (faltaConfigurarGrupos) return;
+  try {
+    const chat = await message.getChat();
+    if (!chat.isGroup || chat.id._serialized !== GRUPO_ORIGEN) return;
+    const idOrigen = message.id._serialized;
+    const idDestino = MAPA_ORIGEN_DESTINO.get(idOrigen);
+    if (!idDestino) return;
+    const msgDestino = await client.getMessageById(idDestino);
+    if (!msgDestino) return;
+    const { textoDestino } = construirTextoDestino(String(newBody || '').trim() || message.body || '');
+    if (!textoDestino) return;
+    await msgDestino.edit(textoDestino);
+    console.log('\n>>> MENSAJE EDITADO EN ORIGEN → actualizado en grupo destino <<<');
+    console.log('Antes:', prevBody?.slice(0, 80) + (prevBody && prevBody.length > 80 ? '…' : ''));
+    console.log('Nuevo texto destino:', textoDestino.slice(0, 120) + (textoDestino.length > 120 ? '…' : ''));
+    console.log('================================\n');
+    logEvento({ tipo: 'edit', detalle: `idOrigen=${idOrigen} idDestino=${idDestino}` });
+  } catch (err) {
+    console.warn('Error al editar mensaje en destino (message_edit):', err.message);
   }
 });
 
@@ -227,72 +299,22 @@ client.on('message', async (msg) => {
     return;
   }
 
-  const productos = extraerPrecios(cuerpo);
-  const tienePrecio = productos.length > 0;
-  const tallas = extraerTallas(cuerpo);
-  const alertasStock = extraerAlertasStock(cuerpo);
+  const { textoDestino, productos, tallas, alertasStock, tienePrecio } = construirTextoDestino(cuerpo);
   if (tallas.length > 0) console.log('Tallas extraídas:', tallas.join(', '));
   else if (tienePrecio && cuerpo.includes('\n')) console.log('Tallas extraídas: (ninguna; revisar si hay segunda línea con números)');
-
-  // Construir texto en soles cuando hay precio
-  let textoDestino = '';
   if (tienePrecio) {
-    const lineasSoles = [];
     for (const item of productos) {
-      let precioSoles;
-      let precioRegularSoles = null;
-      if (item.enSoles) {
-        // Ya está en soles
-        precioSoles = Math.ceil(item.precio);
-        if (item.precioRegular) precioRegularSoles = Math.ceil(item.precioRegular);
-        console.log(item.nombre ? `${item.nombre}: Ya en soles S/ ${precioSoles}` : `Ya en soles S/ ${precioSoles}`);
-      } else if (item.conSignoDolar) {
-        // Tiene signo $ explícito: solo aplicar tipo de cambio (sin fórmula)
-        precioSoles = Math.ceil(item.precio * TIPO_CAMBIO);
-        if (item.precioRegular) precioRegularSoles = Math.ceil(item.precioRegular * TIPO_CAMBIO);
-        console.log(item.nombre 
-          ? `${item.nombre}: Conversión directa $${item.precio} × ${TIPO_CAMBIO} = S/ ${precioSoles}`
-          : `Conversión directa $${item.precio} × ${TIPO_CAMBIO} = S/ ${precioSoles}`);
-      } else {
-        // Sin signo $: aplicar fórmula completa (impuesto, shopper, ganancia, envío)
-        const { totalSoles, desglose } = calcularPrecioVenta(item.precio, {
-          porcentajeImpuesto: config.PORCENTAJE_IMPUESTO,
-          porcentajeShopper: config.PORCENTAJE_SHOPPER,
-          porcentajeGanancia: config.PORCENTAJE_GANANCIA,
-          envioUSD: config.ENVIO_USD,
-          tipoCambioSoles: TIPO_CAMBIO,
-        });
-        precioSoles = totalSoles;
-        if (item.precioRegular) {
-          const { totalSoles: regSoles } = calcularPrecioVenta(item.precioRegular, {
+      const precioSoles = item.enSoles ? Math.ceil(item.precio) : item.conSignoDolar
+        ? Math.ceil(item.precio * TIPO_CAMBIO)
+        : calcularPrecioVenta(item.precio, {
             porcentajeImpuesto: config.PORCENTAJE_IMPUESTO,
             porcentajeShopper: config.PORCENTAJE_SHOPPER,
             porcentajeGanancia: config.PORCENTAJE_GANANCIA,
             envioUSD: config.ENVIO_USD,
             tipoCambioSoles: TIPO_CAMBIO,
-          });
-          precioRegularSoles = regSoles;
-          console.log(`Precio venta $${item.precio}: ${desglose}`);
-          console.log(`Precio regular $${item.precioRegular} (antes): S/ ${precioRegularSoles}`);
-        } else {
-          console.log(item.nombre ? `${item.nombre}: ${desglose}` : desglose);
-        }
-      }
-      if (precioRegularSoles != null) {
-        lineasSoles.push(`💰 Precio: S/ ${precioSoles} – Antes S/ ${precioRegularSoles}`);
-      } else {
-        lineasSoles.push(item.nombre ? `💰 ${item.nombre} Precio: S/ ${precioSoles}` : `💰 Precio: S/ ${precioSoles}`);
-      }
+          }).totalSoles;
+      console.log(item.nombre ? `${item.nombre}: S/ ${precioSoles}` : `Precio: S/ ${precioSoles}`);
     }
-    if (tallas.length > 0) {
-      lineasSoles.push(`📏 Tallas disponibles: ${tallas.join(', ')}`);
-    }
-    if (alertasStock.length > 0) {
-      lineasSoles.push(`⚠️ ${alertasStock.join(' | ')}`);
-    }
-    textoDestino = lineasSoles.join('\n');
-  } else {
-    textoDestino = cuerpo;
   }
 
   const idOrigen = msg.id._serialized;
