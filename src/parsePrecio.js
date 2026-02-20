@@ -11,6 +11,9 @@
  * - Con USD: "50 USD", "USD 50"
  * - Decimales: "27.99", "3.5", "5.5"
  * - Precio + stock por tallas: "37, solo 1 en 7 y 5.5" (solo 37 es precio; 7 y 5.5 son tallas)
+ * - Precio + tallas en misma línea: "16.99 tallas 7,8,11,12,10" (solo 16.99 es precio; 7,8,11,12,10 son tallas)
+ * - Precio rebaja: "29.99 precio regular 42.50" (29.99=venta, 42.50=antes; precioRegular opcional)
+ * - Tallas primero, precio al final: "7,10,11 24.99" (7,10,11=tallas, 24.99=precio)
  * 
  * IMPORTANTE: Si el precio tiene signo $ explícito ($28 o 28$), marca conSignoDolar=true
  * para aplicar solo conversión directa (sin fórmula de costos/márgenes).
@@ -34,6 +37,10 @@ function aNumero(str) {
 /** Rango típico de tallas: calzado US 3-15, laptops 11/13/15". Números .5 son comunes en tallas. */
 const TALLA_MIN = 2;
 const TALLA_MAX = 15;
+
+/** Rango de tallas de pantalón (cintura en pulgadas): 24-42. Usado para detectar "26, 28, 30, 31" debajo del precio. */
+const TALLA_PANTALON_MIN = 24;
+const TALLA_PANTALON_MAX = 42;
 
 /**
  * Indica si un número parece talla (calzado, ropa, laptop) y no precio.
@@ -73,6 +80,45 @@ function extraerMultiplesDePreciosDeLinea(linea) {
   if (!l) return [];
 
   const resultados = [];
+
+  // Caso "16.99 tallas 7,8,11,12,10": precio + palabra "tallas" + lista separada por comas (NO decimales)
+  const matchPrecioTallas = l.match(/^(\d+(?:[.,]\d{1,2})?)\s+tallas\s+[\d,\s]+$/i);
+  if (matchPrecioTallas) {
+    const valor = aNumero(matchPrecioTallas[1]);
+    if (!Number.isNaN(valor) && valor > 0) {
+      return [{ precio: valor, enSoles: false, conSignoDolar: false, nombre: undefined }];
+    }
+  }
+
+  // Caso "30 oz 16.99" o "30 oz 16.99 40 oz 19.99": cantidad + unidad + precio (uno o varios)
+  const matchesCantidadUnidad = l.matchAll(/(\d+)\s*(oz|ml|g|kg|lb)\s+(\d+(?:[.,]\d{1,2})?)/gi);
+  const resultadosCantidadUnidad = [];
+  for (const m of matchesCantidadUnidad) {
+    const nombre = `${m[1]} ${m[2]}`;
+    const valor = aNumero(m[3]);
+    if (!Number.isNaN(valor) && valor > 0) {
+      resultadosCantidadUnidad.push({ precio: valor, enSoles: false, conSignoDolar: false, nombre });
+    }
+  }
+  if (resultadosCantidadUnidad.length > 0) {
+    return resultadosCantidadUnidad;
+  }
+
+  // Caso "7,10,11 24.99": tallas primero (separadas por coma), precio al final
+  const matchTallasPrecio = l.match(/^(\d+(?:,\d+)+)\s+(\d+[.,]\d{1,2})\s*$/);
+  if (matchTallasPrecio) {
+    const tallasStr = matchTallasPrecio[1];
+    const precioStr = matchTallasPrecio[2];
+    const tallas = tallasStr.split(',').map((s) => aNumero(s.trim())).filter((n) => !Number.isNaN(n));
+    const precio = aNumero(precioStr.replace(',', '.'));
+    const todasTallasValidas = tallas.length > 0 && tallas.every(
+      (v) => v >= TALLA_MIN && v <= TALLA_MAX && (Number.isInteger(v) || Math.abs((v % 1) - 0.5) < 0.01)
+    );
+    if (todasTallasValidas && !Number.isNaN(precio) && precio > 0) {
+      return [{ precio, enSoles: false, conSignoDolar: false, nombre: undefined }];
+    }
+  }
+
   const tieneSignoDolar = /\$/.test(l);
 
   // Buscar todos los precios con $ explícito: "$28", "8$", etc.
@@ -276,6 +322,17 @@ function extraerDeLinea(linea) {
     if (!Number.isNaN(valor) && valor > 0) return { precio: valor, enSoles: true, conSignoDolar: false, nombre: undefined };
   }
 
+  // Cantidad + unidad + precio: "30 oz 16.99", "40 oz 19.99" → nombre "30 oz", precio 16.99
+  const cantidadUnidadPrecio = l.match(/^(\d+)\s*(oz|ml|g|kg|lb)\s+(\d+(?:[.,]\d{1,2})?)\s*$/i);
+  if (cantidadUnidadPrecio) {
+    const cantidad = cantidadUnidadPrecio[1];
+    const unidad = cantidadUnidadPrecio[2];
+    const valor = aNumero(cantidadUnidadPrecio[3]);
+    if (!Number.isNaN(valor) && valor > 0) {
+      return { precio: valor, enSoles: false, conSignoDolar: false, nombre: `${cantidad} ${unidad}` };
+    }
+  }
+
   // Número al inicio + nombre (sin $): "76 mochila", "19 pijamas", "6 tomatodo"
   const numeroPrimero = l.match(/^\s*(\d+(?:[.,]\d+)?)\s+(.+)$/);
   if (numeroPrimero) {
@@ -351,6 +408,27 @@ function esPrecioClaro(precio, strNumero) {
   return false;
 }
 
+/**
+ * Indica si una línea contiene solo números que parecen tallas de pantalón (cintura 24-42).
+ * Usado cuando arriba hay precio: "32.99" luego "26, 28, 30, 31" → la segunda son tallas, no precios.
+ */
+function lineaSoloTallasPantalon(linea) {
+  const l = linea.trim();
+  if (!l) return false;
+  if (/\$|S\/\s*\d|precio\s*:?\s*\d|USD\s*\d|\d\s*USD/i.test(l)) return false;
+  const rawMatches = l.match(/\b(\d+(?:[.,]\d+)?)\b/g) || [];
+  if (rawMatches.length === 0) return false;
+  const numeros = rawMatches.map((s) => aNumero(s)).filter((n) => !Number.isNaN(n));
+  if (numeros.length === 0) return false;
+  for (const v of numeros) {
+    if (v < TALLA_PANTALON_MIN || v > TALLA_PANTALON_MAX) return false;
+    if (/\.\d{2}$/.test(String(v))) return false; // dos decimales = precio (ej. 26.99)
+    const esMedio = Math.abs((v % 1) - 0.5) < 0.01;
+    if (!Number.isInteger(v) && !esMedio) return false;
+  }
+  return true;
+}
+
 /** True si la línea es solo talla(s) en cm (ej. "25.5 cm" o "25 cm, 26 cm"). No tomar como precio. */
 function lineaEsTallaCm(linea) {
   const l = linea.trim();
@@ -406,6 +484,27 @@ function lineaEsRangoTallaEdad(linea) {
   return a >= 0 && b <= 20; // rango típico talla/edad niño (0-20)
 }
 
+/** Extrae tallas de "7,10,11 24.99" — números antes del precio, separados por coma. */
+function extraerTallasDeLineaTallasPrimeroPrecioFinal(linea) {
+  const m = linea.match(/^(\d+(?:,\d+)+)\s+\d+[.,]\d{1,2}\s*$/);
+  if (!m) return [];
+  return m[1]
+    .split(',')
+    .map((s) => aNumero(s.trim()))
+    .filter((n) => !Number.isNaN(n) && n >= TALLA_MIN && n <= TALLA_MAX && (Number.isInteger(n) || Math.abs((n % 1) - 0.5) < 0.01));
+}
+
+/** Extrae tallas de "precio tallas 7,8,11,12,10" — los números tras "tallas" separados por coma son tallas (no decimales). */
+function extraerTallasDePrefijoTallas(linea) {
+  const m = linea.match(/\btallas\s+([\d,\s.5]+)$/i);
+  if (!m) return [];
+  const parte = m[1];
+  return parte
+    .split(',')
+    .map((s) => aNumero(s.trim()))
+    .filter((n) => !Number.isNaN(n) && n >= TALLA_MIN && n <= TALLA_MAX && (Number.isInteger(n) || Math.abs((n % 1) - 0.5) < 0.01));
+}
+
 /** Extrae valores "X cm" de una línea (ej. "25.5 cm" → ["25.5 cm"]). */
 function extraerTallasCmDeLinea(linea) {
   const out = [];
@@ -442,16 +541,33 @@ export function extraerPrecios(texto) {
   for (const linea of lineas) {
     // Talla primero (ej. "24 M") o rango edad (ej. "8-10" para NIÑO): no tomar como precios
     if (lineaEsTallaBebePrimero(linea) || lineaEsRangoTallaEdad(linea)) continue;
-    // Si ya hubo un precio claro y esta línea es solo tallas (números, "7 1/2", o "25.5 cm"), no tomar como precios
-    if (yaHayPrecioClaro && (lineaSoloTallas(linea) || lineaEsTallaCm(linea))) continue;
-    // Talla primero, precio abajo: "8 1/2" luego "9.29" → no tomar 8.5 como precio
-    if (!yaHayPrecioClaro && lineaSoloTallas(linea) && algunaLineaTienePrecioClaro(lineas)) continue;
+    // Si ya hubo un precio claro y esta línea es solo tallas (calzado 6-15, pantalón 26-42, o "25.5 cm"), no tomar como precios
+    if (yaHayPrecioClaro && (lineaSoloTallas(linea) || lineaEsTallaCm(linea) || lineaSoloTallasPantalon(linea))) continue;
+    // Talla primero, precio abajo: "8 1/2" luego "9.29" o "26, 28, 30, 31" luego "32.99" → no tomar como precios
+    if (!yaHayPrecioClaro && (lineaSoloTallas(linea) || lineaSoloTallasPantalon(linea)) && algunaLineaTienePrecioClaro(lineas)) continue;
     // Caso: Precio + stock por tallas "37, solo 1 en 7 y 5.5" → solo 37 es precio; 7 y 5.5 son tallas
     if (lineaEsStockPorTalla(linea)) {
       const r = extraerPrecioDeLineaConStockTallas(linea);
       if (r) {
         resultados.push(r);
         if (esPrecioClaro(r.precio)) yaHayPrecioClaro = true;
+      }
+      continue;
+    }
+    // Caso: "29.99 precio regular 42.50" → precio venta 29.99, precio anterior 42.50 (para mostrar rebaja)
+    const matchPrecioRegular = linea.match(/^(\d+(?:[.,]\d{1,2})?)\s+precio\s+regular\s+(\d+(?:[.,]\d{1,2})?)\s*$/i);
+    if (matchPrecioRegular) {
+      const precioVenta = aNumero(matchPrecioRegular[1]);
+      const precioAnterior = aNumero(matchPrecioRegular[2]);
+      if (!Number.isNaN(precioVenta) && precioVenta > 0 && !Number.isNaN(precioAnterior) && precioAnterior > 0) {
+        resultados.push({
+          precio: precioVenta,
+          enSoles: false,
+          conSignoDolar: false,
+          nombre: undefined,
+          precioRegular: precioAnterior
+        });
+        yaHayPrecioClaro = true;
       }
       continue;
     }
@@ -549,6 +665,33 @@ export function extraerPrecios(texto) {
  * @param {string} texto - Cuerpo del mensaje
  * @returns {{ precio: number, enSoles: boolean, conSignoDolar: boolean, nombre?: string } | null}
  */
+/** Patrones de alertas de stock (Últimas unidades, 2 últimos, etc.). */
+const RE_ALERTAS_STOCK = [
+  /últimas?\s+unidades?(!+|\s*!!?)?/gi,
+  /\d+\s*últimos?/gi,
+  /solo\s+\d+/gi,
+  /quedan\s+\d+/gi,
+  /últimos?\s+\d+/gi,
+];
+
+/**
+ * Extrae alertas de stock del texto (ej. "Últimas unidades !!", "2 últimos").
+ * @param {string} texto
+ * @returns {string[]} Frases de alerta encontradas
+ */
+export function extraerAlertasStock(texto) {
+  if (!texto || typeof texto !== 'string') return [];
+  const encontradas = new Set();
+  for (const re of RE_ALERTAS_STOCK) {
+    let m;
+    const regex = new RegExp(re.source, re.flags);
+    while ((m = regex.exec(texto)) !== null) {
+      encontradas.add(m[0].trim());
+    }
+  }
+  return [...encontradas];
+}
+
 export function extraerPrecio(texto) {
   const arr = extraerPrecios(texto);
   return arr.length > 0 ? arr[0] : null;
@@ -668,10 +811,16 @@ export function extraerTallas(texto) {
 
     if (lineaTienePrecioClaro) yaHayPrecioClaro = true;
 
-    // Talla primero, precio abajo: "8 1/2" luego "9.29" → extraer 8.5 como talla aunque venga antes del precio
-    if (!yaHayPrecioClaro && lineaSoloTallas(linea) && algunaLineaTienePrecioClaro(lineas)) {
-      for (const v of numerosLinea) {
-        if (v >= TALLA_MIN && v <= TALLA_MAX) tallasNumeros.push(v);
+    // Talla primero, precio abajo: "8 1/2" luego "9.29" o "26, 28, 30, 31" luego "32.99"
+    if (!yaHayPrecioClaro && algunaLineaTienePrecioClaro(lineas)) {
+      if (lineaSoloTallas(linea)) {
+        for (const v of numerosLinea) {
+          if (v >= TALLA_MIN && v <= TALLA_MAX) tallasNumeros.push(v);
+        }
+      } else if (lineaSoloTallasPantalon(linea)) {
+        for (const v of numerosLinea) {
+          if (v >= TALLA_PANTALON_MIN && v <= TALLA_PANTALON_MAX) tallasNumeros.push(v);
+        }
       }
     }
 
@@ -689,6 +838,14 @@ export function extraerTallas(texto) {
             for (const v of numerosLinea) {
               if (v >= TALLA_MIN && v <= TALLA_MAX) tallasNumeros.push(v);
             }
+          } else if (lineaSoloTallasPantalon(linea)) {
+            for (const v of numerosLinea) {
+              if (v >= TALLA_PANTALON_MIN && v <= TALLA_PANTALON_MAX) tallasNumeros.push(v);
+            }
+          } else if (/\btallas\s+[\d,\s.5]+$/i.test(linea)) {
+            for (const v of extraerTallasDePrefijoTallas(linea)) tallasNumeros.push(v);
+          } else if (/^\d+(?:,\d+)+\s+\d+[.,]\d{1,2}\s*$/.test(linea)) {
+            for (const v of extraerTallasDeLineaTallasPrimeroPrecioFinal(linea)) tallasNumeros.push(v);
           } else if (lineaTienePrecioClaro) {
             for (let i = 0; i < numerosLinea.length; i++) {
               const v = numerosLinea[i];

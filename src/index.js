@@ -5,8 +5,9 @@ import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = pkg;
 import qrcode from 'qrcode-terminal';
 import { config } from '../config.js';
-import { extraerPrecios, extraerTallas } from './parsePrecio.js';
+import { extraerPrecios, extraerTallas, extraerAlertasStock } from './parsePrecio.js';
 import { calcularPrecioVenta } from './calcularPrecioVenta.js';
+import { logMensajeProcesado, logEvento } from './logger.js';
 
 const GRUPO_ORIGEN = config.GRUPO_ORIGEN_ID;
 const GRUPO_DESTINO = config.GRUPO_DESTINO_ID;
@@ -138,8 +139,10 @@ client.on('group_join', async (notification) => {
     console.log('\n>>> BIENVENIDA ENVIADA (grupo destino) <<<');
     console.log('Usuarios agregados:', nombres.length ? nombres.join(', ') : notification.recipientIds?.length || '?');
     console.log('================================\n');
+    logEvento({ tipo: 'bienvenida', detalle: `Usuarios agregados: ${nombres.length ? nombres.join(', ') : notification.recipientIds?.length || '?'}` });
   } catch (err) {
     console.warn('Error al enviar mensaje de bienvenida:', err.message);
+    logEvento({ tipo: 'bienvenida', detalle: `Error: ${err.message}` });
   }
 });
 
@@ -156,6 +159,7 @@ client.on('message_revoke_everyone', async (message, revokedMsg) => {
     if (msgDestino) {
       await msgDestino.delete(true);
       console.log('\n>>> MENSAJE ELIMINADO EN ORIGEN → eliminado también en grupo destino <<<\n');
+      logEvento({ tipo: 'revoke', detalle: `idOrigen=${idOrigen} idDestino=${idDestino}` });
     }
     MAPA_ORIGEN_DESTINO.delete(idOrigen);
   } catch (err) {
@@ -186,6 +190,7 @@ client.on('message', async (msg) => {
 
   if (idChat !== GRUPO_ORIGEN) return;
 
+  const receivedAt = new Date().toISOString();
   const tieneMedia = msg.hasMedia;
 
   // Con imagen, el caption a veces llega después: recargar mensaje para obtener texto completo (varias líneas)
@@ -208,16 +213,41 @@ client.on('message', async (msg) => {
   console.log('Texto original:', cuerpo || '(sin texto)');
   console.log('=========================================\n');
 
-  if (!tieneMedia && !cuerpo) return;
+  if (!tieneMedia && !cuerpo) {
+    logMensajeProcesado({
+      receivedAt,
+      grupo: nombreGrupo,
+      tieneMedia,
+      textoOriginal: cuerpo || '(vacío)',
+      productos: [],
+      tallas: [],
+      tipoEnvio: null,
+      razonNoEnvio: 'sin_media_ni_texto',
+    });
+    return;
+  }
 
   const productos = extraerPrecios(cuerpo);
   const tienePrecio = productos.length > 0;
   const tallas = extraerTallas(cuerpo);
+  const alertasStock = extraerAlertasStock(cuerpo);
   if (tallas.length > 0) console.log('Tallas extraídas:', tallas.join(', '));
   else if (tienePrecio && cuerpo.includes('\n')) console.log('Tallas extraídas: (ninguna; revisar si hay segunda línea con números)');
 
   // Mensaje solo texto sin precio: no reenviar
-  if (!tieneMedia && !tienePrecio) return;
+  if (!tieneMedia && !tienePrecio) {
+    logMensajeProcesado({
+      receivedAt,
+      grupo: nombreGrupo,
+      tieneMedia,
+      textoOriginal: cuerpo,
+      productos: productos.map((p) => ({ precio: p.precio, enSoles: p.enSoles, nombre: p.nombre })),
+      tallas,
+      tipoEnvio: null,
+      razonNoEnvio: 'sin_precio_extractado',
+    });
+    return;
+  }
 
   // Construir texto en soles cuando hay precio
   let textoDestino = '';
@@ -225,13 +255,16 @@ client.on('message', async (msg) => {
     const lineasSoles = [];
     for (const item of productos) {
       let precioSoles;
+      let precioRegularSoles = null;
       if (item.enSoles) {
         // Ya está en soles
         precioSoles = Math.ceil(item.precio);
+        if (item.precioRegular) precioRegularSoles = Math.ceil(item.precioRegular);
         console.log(item.nombre ? `${item.nombre}: Ya en soles S/ ${precioSoles}` : `Ya en soles S/ ${precioSoles}`);
       } else if (item.conSignoDolar) {
         // Tiene signo $ explícito: solo aplicar tipo de cambio (sin fórmula)
         precioSoles = Math.ceil(item.precio * TIPO_CAMBIO);
+        if (item.precioRegular) precioRegularSoles = Math.ceil(item.precioRegular * TIPO_CAMBIO);
         console.log(item.nombre 
           ? `${item.nombre}: Conversión directa $${item.precio} × ${TIPO_CAMBIO} = S/ ${precioSoles}`
           : `Conversión directa $${item.precio} × ${TIPO_CAMBIO} = S/ ${precioSoles}`);
@@ -245,14 +278,34 @@ client.on('message', async (msg) => {
           tipoCambioSoles: TIPO_CAMBIO,
         });
         precioSoles = totalSoles;
-        console.log(item.nombre ? `${item.nombre}: ${desglose}` : desglose);
+        if (item.precioRegular) {
+          const { totalSoles: regSoles } = calcularPrecioVenta(item.precioRegular, {
+            porcentajeImpuesto: config.PORCENTAJE_IMPUESTO,
+            porcentajeShopper: config.PORCENTAJE_SHOPPER,
+            porcentajeGanancia: config.PORCENTAJE_GANANCIA,
+            envioUSD: config.ENVIO_USD,
+            tipoCambioSoles: TIPO_CAMBIO,
+          });
+          precioRegularSoles = regSoles;
+          console.log(`Precio venta $${item.precio}: ${desglose}`);
+          console.log(`Precio regular $${item.precioRegular} (antes): S/ ${precioRegularSoles}`);
+        } else {
+          console.log(item.nombre ? `${item.nombre}: ${desglose}` : desglose);
+        }
       }
-      lineasSoles.push(item.nombre ? `💰 ${item.nombre} Precio: S/ ${precioSoles}` : `💰 Precio: S/ ${precioSoles}`);
+      if (precioRegularSoles != null) {
+        lineasSoles.push(`💰 Precio: S/ ${precioSoles} – Antes S/ ${precioRegularSoles}`);
+      } else {
+        lineasSoles.push(item.nombre ? `💰 ${item.nombre} Precio: S/ ${precioSoles}` : `💰 Precio: S/ ${precioSoles}`);
+      }
     }
     if (tallas.length > 0) {
       lineasSoles.push(`📏 Tallas disponibles: ${tallas.join(', ')}`);
     }
-    textoDestino = lineasSoles.join('\n'); // dos líneas: precio + tallas
+    if (alertasStock.length > 0) {
+      lineasSoles.push(`⚠️ ${alertasStock.join(' | ')}`);
+    }
+    textoDestino = lineasSoles.join('\n');
   }
 
   const idOrigen = msg.id._serialized;
@@ -263,13 +316,36 @@ client.on('message', async (msg) => {
       const media = await msg.downloadMedia();
       if (media) {
         const sent = await client.sendMessage(GRUPO_DESTINO, media);
+        const sentAt = new Date().toISOString();
         if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
         console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
         console.log('Tipo: Imagen sola (sin precio)');
         console.log('Media tipo:', media.mimetype);
         console.log('================================\n');
+        logMensajeProcesado({
+          receivedAt,
+          sentAt,
+          grupo: nombreGrupo,
+          tieneMedia,
+          textoOriginal: cuerpo,
+          productos: [],
+          tallas,
+          textoEnviado: null,
+          tipoEnvio: 'imagen_sola',
+          mediaTipo: media.mimetype,
+        });
       } else {
         console.warn('No se pudo descargar la imagen');
+        logMensajeProcesado({
+          receivedAt,
+          grupo: nombreGrupo,
+          tieneMedia,
+          textoOriginal: cuerpo,
+          productos: [],
+          tallas,
+          error: 'No se pudo descargar la imagen',
+          razonNoEnvio: 'fallo_descarga_media',
+        });
       }
       return;
     }
@@ -277,6 +353,7 @@ client.on('message', async (msg) => {
     // 2) Foto + texto con precio (mismo mensaje): enviar imagen con caption en soles
     if (tieneMedia && tienePrecio) {
       const media = await msg.downloadMedia();
+      const sentAt = new Date().toISOString();
       if (media) {
         const sent = await client.sendMessage(GRUPO_DESTINO, media, { caption: textoDestino });
         if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
@@ -286,6 +363,18 @@ client.on('message', async (msg) => {
         console.log('Caption enviado (cada línea):');
         textoDestino.split(/\r?\n|\r/).forEach((l, i) => console.log(`  ${i + 1}. ${l}`));
         console.log('================================\n');
+        logMensajeProcesado({
+          receivedAt,
+          sentAt,
+          grupo: nombreGrupo,
+          tieneMedia,
+          textoOriginal: cuerpo,
+          productos: productos.map((p) => ({ precio: p.precio, enSoles: p.enSoles, nombre: p.nombre })),
+          tallas,
+          textoEnviado: textoDestino,
+          tipoEnvio: 'imagen_con_precios',
+          mediaTipo: media.mimetype,
+        });
       } else {
         const sent = await client.sendMessage(GRUPO_DESTINO, textoDestino);
         if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
@@ -294,6 +383,18 @@ client.on('message', async (msg) => {
         console.log('Texto enviado:');
         console.log(textoDestino);
         console.log('================================\n');
+        logMensajeProcesado({
+          receivedAt,
+          sentAt,
+          grupo: nombreGrupo,
+          tieneMedia,
+          textoOriginal: cuerpo,
+          productos: productos.map((p) => ({ precio: p.precio, enSoles: p.enSoles, nombre: p.nombre })),
+          tallas,
+          textoEnviado: textoDestino,
+          tipoEnvio: 'solo_texto',
+          error: 'Falló descarga de imagen',
+        });
       }
       return;
     }
@@ -301,15 +402,37 @@ client.on('message', async (msg) => {
     // 3) Solo texto con precio: enviar solo el texto (precios en soles)
     if (!tieneMedia && tienePrecio) {
       const sent = await client.sendMessage(GRUPO_DESTINO, textoDestino);
+      const sentAt = new Date().toISOString();
       if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
       console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
       console.log('Tipo: Solo texto con precios convertidos');
       console.log('Texto enviado:');
       console.log(textoDestino);
       console.log('================================\n');
+      logMensajeProcesado({
+        receivedAt,
+        sentAt,
+        grupo: nombreGrupo,
+        tieneMedia,
+        textoOriginal: cuerpo,
+        productos: productos.map((p) => ({ precio: p.precio, enSoles: p.enSoles, nombre: p.nombre })),
+        tallas,
+        textoEnviado: textoDestino,
+        tipoEnvio: 'solo_texto',
+      });
     }
   } catch (err) {
     console.error('Error al reenviar:', err.message);
+    logMensajeProcesado({
+      receivedAt,
+      grupo: nombreGrupo,
+      tieneMedia,
+      textoOriginal: cuerpo,
+      productos: productos?.map((p) => ({ precio: p.precio, enSoles: p.enSoles, nombre: p.nombre })) ?? [],
+      tallas: tallas ?? [],
+      error: err.message,
+      razonNoEnvio: 'error_al_reenviar',
+    });
   }
 });
 
