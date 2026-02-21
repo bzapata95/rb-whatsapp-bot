@@ -81,6 +81,16 @@ function extraerMultiplesDePreciosDeLinea(linea) {
 
   const resultados = [];
 
+  // Caso "2x47", "3x29.99": cantidad x precio
+  const matchCantidadPrecio = l.match(/^(\d+)\s*[x×]\s*(\d+(?:[.,]\d+)?)\s*$/i);
+  if (matchCantidadPrecio) {
+    const cantidad = parseInt(matchCantidadPrecio[1], 10);
+    const valor = aNumero(matchCantidadPrecio[2]);
+    if (cantidad > 0 && !Number.isNaN(valor) && valor > 0) {
+      return [{ precio: valor, enSoles: false, conSignoDolar: false, nombre: undefined, cantidad }];
+    }
+  }
+
   // Caso "16.99 tallas 7,8,11,12,10": precio + palabra "tallas" + lista separada por comas (NO decimales)
   const matchPrecioTallas = l.match(/^(\d+(?:[.,]\d{1,2})?)\s+tallas\s+[\d,\s]+$/i);
   if (matchPrecioTallas) {
@@ -287,6 +297,16 @@ function extraerDeLinea(linea) {
   const l = linea.trim();
   if (!l) return null;
 
+  // Caso "2x47", "3x29.99": cantidad x precio
+  const matchCantidadPrecio = l.match(/^(\d+)\s*[x×]\s*(\d+(?:[.,]\d+)?)\s*$/i);
+  if (matchCantidadPrecio) {
+    const cantidad = parseInt(matchCantidadPrecio[1], 10);
+    const valor = aNumero(matchCantidadPrecio[2]);
+    if (cantidad > 0 && !Number.isNaN(valor) && valor > 0) {
+      return { precio: valor, enSoles: false, conSignoDolar: false, nombre: undefined, cantidad };
+    }
+  }
+
   // Detectar si tiene signo $ explícito (para solo aplicar tipo de cambio, sin fórmula)
   const tieneSignoDolar = /\$/.test(l);
 
@@ -339,6 +359,31 @@ function extraerDeLinea(linea) {
     const valor = aNumero(numeroPrimero[1]);
     if (!Number.isNaN(valor) && valor > 0) {
       const nombre = numeroPrimero[2].trim().slice(0, 80);
+      return { precio: valor, enSoles: false, conSignoDolar: false, nombre };
+    }
+  }
+
+  // Nombre + número + opcional talla letra: "Hombre 118 S", "Mujer 49.99 M"
+  const nombreNumeroTalla = l.match(/^\s*(.+?)\s+(\d+(?:[.,]\d+)?)\s+(?:[A-Za-z]{1,3})\s*$/);
+  if (nombreNumeroTalla) {
+    const posibleTalla = nombreNumeroTalla[0].trim().split(/\s+/).pop();
+    const esTallaLetra = /^(XXS|XS|S|M|L|XL|XXL|2XL|3XL)$/i.test(posibleTalla);
+    if (esTallaLetra) {
+      const valor = aNumero(nombreNumeroTalla[2]);
+      if (!Number.isNaN(valor) && valor > 0) {
+        const nombre = nombreNumeroTalla[1].trim().slice(0, 80);
+        return { precio: valor, enSoles: false, conSignoDolar: false, nombre };
+      }
+    }
+  }
+
+  // Número + coma + texto: "450, mujer", "159,99"
+  const numeroComaTexto = l.match(/^\s*(\d+(?:[.,]\d+)?)\s*,\s*(.+)$/);
+  if (numeroComaTexto) {
+    const valor = aNumero(numeroComaTexto[1]);
+    const resto = numeroComaTexto[2].trim();
+    if (!Number.isNaN(valor) && valor > 0 && resto.length > 0 && !/^\d/.test(resto)) {
+      const nombre = resto.slice(0, 80);
       return { precio: valor, enSoles: false, conSignoDolar: false, nombre };
     }
   }
@@ -737,6 +782,18 @@ function lineaSoloTallasOLetras(linea) {
 /** Cualquier salto de línea (WhatsApp puede enviar \n, \r\n o \r). */
 const RE_NEWLINE = /\r?\n|\r/;
 
+/**
+ * Números que son CANTIDAD (unidades) y no tallas: "solo 3 und", "6 und", "Llevando 2", "Hay 4 und".
+ */
+function numerosQueSonCantidad(texto) {
+  const cantidades = new Set();
+  const m1 = texto.matchAll(/(\d+)\s*(?:und|unidades?)\b/gi);
+  for (const m of m1) cantidades.add(aNumero(m[1]));
+  const m2 = texto.matchAll(/\bllevando\s+(\d+)\s/gi);
+  for (const m of m2) cantidades.add(parseInt(m[1], 10));
+  return cantidades;
+}
+
 /** Patrones "Desde X hasta Y" o "X a Y" para rango de tallas. */
 const RE_RANGO_DESDE_HASTA = /desde\s+(\d+(?:[.,]\d+)?)\s+hasta\s+(\d+(?:[.,]\d+)?)/i;
 const RE_RANGO_A = /(\d+(?:[.,]\d+)?)\s+(?:a|al)\s+(\d+(?:[.,]\d+)?)/i;
@@ -767,7 +824,7 @@ function expandirRangoTallas(min, max) {
   return out;
 }
 
-/** Normaliza texto: Unicode y tallas tipo "7 1/2" → 7.5 para que no se tomen como precios. */
+/** Normaliza texto: Unicode, tallas "7 1/2" → 7.5, y signos finales para permitir "159!" como precio. */
 function normalizarTexto(texto) {
   return String(texto)
     .replace(/\u200B|\u200C|\u200D|\uFEFF/g, '') // zero-width chars
@@ -775,6 +832,7 @@ function normalizarTexto(texto) {
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/\u00A0/g, ' ')
     .replace(/\b(\d+)\s+1\/2\b/g, '$1.5') // "7 1/2" → 7.5, "8 1/2" → 8.5 (tallas, no precios)
+    .replace(/(\d+(?:[.,]\d+)?)\s*[!?]+(\s|$)/g, '$1$2') // "159!" → "159", "45?" → "45"
     .trim();
 }
 
@@ -790,6 +848,7 @@ export function extraerTallas(texto) {
 
   const textoNorm = normalizarTexto(texto);
   const lineas = textoNorm.split(RE_NEWLINE).map((s) => s.trim()).filter(Boolean);
+  const numerosCantidad = numerosQueSonCantidad(textoNorm);
   const tallasNumeros = [];
   const tallasLetras = new Set();
   const tallasCm = [];
@@ -866,12 +925,54 @@ export function extraerTallas(texto) {
     }
   }
 
-  const nums = [...new Set(tallasNumeros)].sort((a, b) => a - b);
+  const nums = [...new Set(tallasNumeros)].filter((v) => typeof v !== 'number' || !numerosCantidad.has(v)).sort((a, b) => a - b);
   const letrasOrdenadas = TALLAS_LETRAS.filter((t) => tallasLetras.has(t));
   const cmUnicas = [...new Set(tallasCm)];
   const primeroUnicas = yaHayPrecioClaro ? [...new Set(tallasPrimero)] : [];
   const rangoEdadUnicas = yaHayPrecioClaro ? [...new Set(tallasRangoEdad)] : [];
   return [...nums, ...cmUnicas, ...letrasOrdenadas, ...primeroUnicas, ...rangoEdadUnicas];
+}
+
+/**
+ * Indica si un "nombre" extraído es válido para mostrar al cliente.
+ * Filtra saludos, género solo, tallas, indicadores de stock, etc.
+ */
+export function esNombreProductoValido(nombre) {
+  if (!nombre || typeof nombre !== 'string') return false;
+  const n = nombre.trim();
+  if (n.length < 2) return false;
+  // Solo emojis o caracteres no alfanuméricos
+  if (!/[a-zA-ZÁ-ÿ0-9]/.test(n)) return false;
+  // Palabras que no son nombres de producto
+  const palabra = n.toLowerCase();
+  const invalidos = [
+    /^(buenos\s+d[ií]as|hola|buenas|chic[@a]s?|gracias)/i,
+    /^(mujer|hombre|niño|nino)\s*$/i,
+    /^(mujer|hombre)\s+[a-z]{1,3}$/i,  // "Mujer L", "Hombre M"
+    /^[a-z]{1,3}\s+(mujer|hombre|nino|niño)$/i,  // "xs mujer", "L hombre"
+    /^solo\s+(xs?|s|m|l|xl|xxl|xxs|\d+)\s*$/i,
+    /^hay\s+(tallas?|\d+\s*und)/i,
+    /^tallas?\s+/i,
+    /^desde\s*$/i,
+    /^(m|s|l|xl|xxl|xxs|xs)\s+(y|a)\s+(m|s|l|xl|xxl|xxs|xs)/i,
+    /^[msxl]+\s+a\s+[msxl]+\s*(mujer|hombre)?$/i,
+    /^mujer[,.]?\s*hay\s*tallas?$/i,
+    /^[a-z]\s+[a-z](\s+[a-z]+)?\s+mujer$/i,  // "m a xl mujer"
+    /\bchic[@a]s\b/i,
+    /^talla\s+[a-z]$/i,  // "talla S"
+    /^solo\s+[a-z]$/i,   // "solo m"
+    /^[a-z]+\s*,\s*hay\s*tallas?$/i,  // "mujer, hay tallas"
+  ];
+  if (invalidos.some((re) => re.test(n))) return false;
+  // "s y xxl", "Xs y m", "m a xl mujer", "solo xs", "talla S"
+  if (/^(s|m|l|xs?|xxs?|xl)\s+(y|a)\s+/.test(palabra) && /^(s|m|l|xs?|xxs?|xl|mujer|hombre)$/.test(palabra.split(/\s+/).pop())) return false;
+  if (/^solo\s+(xs?|s|m|l|xl|xxl|xxs)$/i.test(palabra)) return false;
+  if (/^tallas?\s+[a-z\d\s,y]+$/i.test(palabra)) return false;
+  // Nombres que son solo tallas con "y": "s y xxl", "m y l"
+  const partes = n.split(/\s+/);
+  const tallasSolas = ['s', 'm', 'l', 'xs', 'xl', 'xxs', 'xxl', '2xl', '3xl'];
+  if (partes.every((p) => tallasSolas.includes(p.toLowerCase().replace(/[,.]/g, '')) || /^[y,]|^a$/.test(p.toLowerCase()))) return false;
+  return true;
 }
 
 export default extraerPrecio;

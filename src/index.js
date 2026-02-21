@@ -5,7 +5,7 @@ import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = pkg;
 import qrcode from 'qrcode-terminal';
 import { config } from '../config.js';
-import { extraerPrecios, extraerTallas, extraerAlertasStock } from './parsePrecio.js';
+import { extraerPrecios, extraerTallas, extraerAlertasStock, esNombreProductoValido } from './parsePrecio.js';
 import { calcularPrecioVenta } from './calcularPrecioVenta.js';
 import { logMensajeProcesado, logEvento } from './logger.js';
 
@@ -163,10 +163,13 @@ function construirTextoDestino(cuerpo) {
         precioRegularSoles = regSoles;
       }
     }
+    const nombreValido = item.nombre && esNombreProductoValido(item.nombre);
+    const prefixCantidad = item.cantidad && item.cantidad > 1 ? `${item.cantidad} x ` : '';
     if (precioRegularSoles != null) {
-      lineasSoles.push(`💰 Precio: S/ ${precioSoles} – Antes S/ ${precioRegularSoles}`);
+      lineasSoles.push(`💰 ${prefixCantidad}Precio: S/ ${precioSoles} – Antes S/ ${precioRegularSoles}`);
     } else {
-      lineasSoles.push(item.nombre ? `💰 ${item.nombre} Precio: S/ ${precioSoles}` : `💰 Precio: S/ ${precioSoles}`);
+      const parteNombre = nombreValido ? `${item.nombre} – ` : '';
+      lineasSoles.push(`💰 ${prefixCantidad}${parteNombre}Precio: S/ ${precioSoles}`);
     }
   }
   if (tallas.length > 0) lineasSoles.push(`📏 Tallas disponibles: ${tallas.join(', ')}`);
