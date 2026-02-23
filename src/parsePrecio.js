@@ -81,13 +81,15 @@ function extraerMultiplesDePreciosDeLinea(linea) {
 
   const resultados = [];
 
-  // Caso "2x47", "3x29.99": cantidad x precio
-  const matchCantidadPrecio = l.match(/^(\d+)\s*[x×]\s*(\d+(?:[.,]\d+)?)\s*$/i);
+  // Caso "2x47", "2x49 hombre", "3x29.99": cantidad por precio
+  const matchCantidadPrecio = l.match(/^(\d+)\s*[x×]\s*(\d+(?:[.,]\d+)?)(?:\s+(.+))?$/i);
   if (matchCantidadPrecio) {
     const cantidad = parseInt(matchCantidadPrecio[1], 10);
     const valor = aNumero(matchCantidadPrecio[2]);
+    const extra = matchCantidadPrecio[3]?.trim();
+    const nombre = /^(hombre|mujer|niño|nino)$/i.test(extra) ? extra : undefined;
     if (cantidad > 0 && !Number.isNaN(valor) && valor > 0) {
-      return [{ precio: valor, enSoles: false, conSignoDolar: false, nombre: undefined, cantidad }];
+      return [{ precio: valor, enSoles: false, conSignoDolar: false, nombre, cantidad }];
     }
   }
 
@@ -297,13 +299,15 @@ function extraerDeLinea(linea) {
   const l = linea.trim();
   if (!l) return null;
 
-  // Caso "2x47", "3x29.99": cantidad x precio
-  const matchCantidadPrecio = l.match(/^(\d+)\s*[x×]\s*(\d+(?:[.,]\d+)?)\s*$/i);
+  // Caso "2x47", "2x49 hombre", "3x29.99": cantidad por precio
+  const matchCantidadPrecio = l.match(/^(\d+)\s*[x×]\s*(\d+(?:[.,]\d+)?)(?:\s+(.+))?$/i);
   if (matchCantidadPrecio) {
     const cantidad = parseInt(matchCantidadPrecio[1], 10);
     const valor = aNumero(matchCantidadPrecio[2]);
+    const extra = matchCantidadPrecio[3]?.trim();
+    const nombre = /^(hombre|mujer|niño|nino)$/i.test(extra) ? extra : undefined;
     if (cantidad > 0 && !Number.isNaN(valor) && valor > 0) {
-      return { precio: valor, enSoles: false, conSignoDolar: false, nombre: undefined, cantidad };
+      return { precio: valor, enSoles: false, conSignoDolar: false, nombre, cantidad };
     }
   }
 
@@ -947,7 +951,6 @@ export function esNombreProductoValido(nombre) {
   const palabra = n.toLowerCase();
   const invalidos = [
     /^(buenos\s+d[ií]as|hola|buenas|chic[@a]s?|gracias)/i,
-    /^(mujer|hombre|niño|nino)\s*$/i,
     /^(mujer|hombre)\s+[a-z]{1,3}$/i,  // "Mujer L", "Hombre M"
     /^[a-z]{1,3}\s+(mujer|hombre|nino|niño)$/i,  // "xs mujer", "L hombre"
     /^solo\s+(xs?|s|m|l|xl|xxl|xxs|\d+)\s*$/i,

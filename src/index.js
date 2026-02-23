@@ -436,25 +436,21 @@ client.on('message', async (msg) => {
       });
     }
 
-    // 4) Solo texto sin precio (ej. "Tallas disponibles"): reenviar el texto tal cual
-    if (!tieneMedia && !tienePrecio && textoDestino) {
-      const sent = await client.sendMessage(GRUPO_DESTINO, textoDestino);
-      const sentAt = new Date().toISOString();
-      if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
-      console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
-      console.log('Tipo: Solo texto (sin precio)');
-      console.log('Texto enviado:', textoDestino);
+    // 4) Solo texto sin precio: NO enviar (anuncios, saludos, coordinación)
+    // Solo pasan al grupo destino los mensajes de venta (con precio o con imagen+producto)
+    if (!tieneMedia && !tienePrecio) {
+      console.log('\n>>> NO ENVIADO (filtrado: solo texto sin precio) <<<');
+      console.log('Texto original:', (cuerpo || '').slice(0, 120) + (cuerpo && cuerpo.length > 120 ? '…' : ''));
       console.log('================================\n');
       logMensajeProcesado({
         receivedAt,
-        sentAt,
         grupo: nombreGrupo,
         tieneMedia,
         textoOriginal: cuerpo,
         productos: [],
-        tallas,
-        textoEnviado: textoDestino,
-        tipoEnvio: 'solo_texto',
+        tallas: [],
+        tipoEnvio: null,
+        razonNoEnvio: 'filtrado_solo_texto_sin_precio',
       });
     }
   } catch (err) {
