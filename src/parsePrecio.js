@@ -81,6 +81,39 @@ function extraerMultiplesDePreciosDeLinea(linea) {
 
   const resultados = [];
 
+  // Caso "9$ 7 pares", "12$ 3 pares": precio$ + cantidad pares → solo el precio
+  const matchPrecioPares = l.match(/^(\d+(?:[.,]\d+)?)\$\s+(\d+)\s+(?:pares?|medias?|medías?)\b/i);
+  if (matchPrecioPares) {
+    const valor = aNumero(matchPrecioPares[1]);
+    if (!Number.isNaN(valor) && valor > 0) {
+      return [{ precio: valor, enSoles: false, conSignoDolar: true, nombre: undefined }];
+    }
+  }
+
+  // Caso "9 pack 2 medías", "12.99 pack 2 juicy top": precio + pack + cantidad + producto → solo el precio
+  const matchPrecioPack = l.match(/^(\d+(?:[.,]\d+)?)\s+pack\s+\d+\s+(.+)$/i);
+  if (matchPrecioPack) {
+    const valor = aNumero(matchPrecioPack[1]);
+    if (!Number.isNaN(valor) && valor > 0) {
+      return [{ precio: valor, enSoles: false, conSignoDolar: false, nombre: undefined }];
+    }
+  }
+
+  // Caso "pack 2 und 12", "Pack 3 und 14.99 us polo m": pack + cantidad + und + precio
+  const matchPackUnd = l.match(/^pack\s+\d+\s*(?:und|unidades?)?\s+(.+)$/i);
+  if (matchPackUnd) {
+    const resto = matchPackUnd[1].trim();
+    const precioMatch = resto.match(/^(\d+(?:[.,]\d+)?)\b/);
+    if (precioMatch) {
+      const valor = aNumero(precioMatch[1]);
+      const restoTrasPrecio = resto.slice(precioMatch[0].length).trim();
+      const nombre = restoTrasPrecio && /[a-z]/i.test(restoTrasPrecio) ? restoTrasPrecio.replace(/\b(us|m|s|xl|hombre|mujer)\b/gi, '').trim().slice(0, 60) : undefined;
+      if (!Number.isNaN(valor) && valor > 0) {
+        return [{ precio: valor, enSoles: false, conSignoDolar: false, nombre: nombre || undefined }];
+      }
+    }
+  }
+
   // Caso "2x47", "2x49 hombre", "3x29.99": cantidad por precio
   const matchCantidadPrecio = l.match(/^(\d+)\s*[x×]\s*(\d+(?:[.,]\d+)?)(?:\s+(.+))?$/i);
   if (matchCantidadPrecio) {
@@ -102,8 +135,26 @@ function extraerMultiplesDePreciosDeLinea(linea) {
     }
   }
 
-  // Caso "30 oz 16.99" o "30 oz 16.99 40 oz 19.99": cantidad + unidad + precio (uno o varios)
-  const matchesCantidadUnidad = l.matchAll(/(\d+)\s*(oz|ml|g|kg|lb)\s+(\d+(?:[.,]\d{1,2})?)/gi);
+  // Caso "Affef 100ml 27.99": marca + capacidad + precio → nombre = marca, precio al final
+  const matchMarcaCapacidad = l.match(/^([A-Za-zÁ-ÿ]+)\s+(\d+)\s*(?:ml|oz|onz|g)\s+(\d+(?:[.,]\d{1,2})?)\s*$/i);
+  if (matchMarcaCapacidad) {
+    const valor = aNumero(matchMarcaCapacidad[3]);
+    if (!Number.isNaN(valor) && valor > 0) {
+      return [{ precio: valor, enSoles: false, conSignoDolar: false, nombre: matchMarcaCapacidad[1].trim().slice(0, 60) }];
+    }
+  }
+
+  // Caso "16.99 16 onz", "16.99 30 onz": precio + capacidad + unidad → 1 producto (oz/onz es capacidad)
+  const matchPrecioCapacidad = l.match(/^(\d+(?:[.,]\d{1,2})?)\s+(\d+)\s*(?:oz|onz|ml|g|kg|lb)\b/i);
+  if (matchPrecioCapacidad) {
+    const valor = aNumero(matchPrecioCapacidad[1]);
+    if (!Number.isNaN(valor) && valor > 0) {
+      return [{ precio: valor, enSoles: false, conSignoDolar: false, nombre: undefined }];
+    }
+  }
+
+  // Caso "30 oz 16.99", "16 onz 16.99" o "30 oz 16.99 40 oz 19.99": cantidad + unidad + precio (uno o varios)
+  const matchesCantidadUnidad = l.matchAll(/(\d+)\s*(oz|onz|ml|g|kg|lb)\s+(\d+(?:[.,]\d{1,2})?)/gi);
   const resultadosCantidadUnidad = [];
   for (const m of matchesCantidadUnidad) {
     const nombre = `${m[1]} ${m[2]}`;
@@ -429,11 +480,14 @@ function extraerDeLinea(linea) {
 /**
  * Indica si una línea contiene solo números que parecen tallas (no precios).
  * Usado cuando arriba ya hubo un precio: "34.55" luego "6 7 8.5" → la segunda es tallas.
+ * No debe tener nombre de producto (ej. "Monedero 8" tiene nombre → no es solo tallas).
  */
 function lineaSoloTallas(linea) {
   const l = linea.trim();
   if (!l) return false;
   if (/\$|S\/\s*\d|precio\s*:?\s*\d|USD\s*\d|\d\s*USD/i.test(l)) return false;
+  // Si tiene 2+ letras consecutivas (nombre de producto), no es "solo tallas"
+  if (/[A-Za-zÁ-ÿ]{2,}/.test(l)) return false;
   const rawMatches = l.match(/\b(\d+(?:[.,]\d+)?)\b/g) || [];
   if (rawMatches.some((raw) => /\.\d{2}$/.test(String(raw).replace(',', '.')))) return false; // "10.00" es precio
   const numeros = rawMatches.map((s) => aNumero(s)).filter((n) => !Number.isNaN(n));
@@ -465,6 +519,8 @@ function lineaSoloTallasPantalon(linea) {
   const l = linea.trim();
   if (!l) return false;
   if (/\$|S\/\s*\d|precio\s*:?\s*\d|USD\s*\d|\d\s*USD/i.test(l)) return false;
+  // "Conjunto 35 y 32" tiene nombre de producto — no es solo tallas
+  if (/[A-Za-zÁ-ÿ]{3,}/.test(l)) return false;
   const rawMatches = l.match(/\b(\d+(?:[.,]\d+)?)\b/g) || [];
   if (rawMatches.length === 0) return false;
   const numeros = rawMatches.map((s) => aNumero(s)).filter((n) => !Number.isNaN(n));
@@ -543,15 +599,25 @@ function extraerTallasDeLineaTallasPrimeroPrecioFinal(linea) {
     .filter((n) => !Number.isNaN(n) && n >= TALLA_MIN && n <= TALLA_MAX && (Number.isInteger(n) || Math.abs((n % 1) - 0.5) < 0.01));
 }
 
-/** Extrae tallas de "precio tallas 7,8,11,12,10" — los números tras "tallas" separados por coma son tallas (no decimales). */
+/** Extrae tallas de "precio tallas 7,8,11,12,10" o "25$ tallas 30/31, 28, 29" — números tras "tallas". */
 function extraerTallasDePrefijoTallas(linea) {
-  const m = linea.match(/\btallas\s+([\d,\s.5]+)$/i);
+  const m = linea.match(/\btallas\s+([\d\s,/]+)$/i);
   if (!m) return [];
   const parte = m[1];
-  return parte
-    .split(',')
-    .map((s) => aNumero(s.trim()))
-    .filter((n) => !Number.isNaN(n) && n >= TALLA_MIN && n <= TALLA_MAX && (Number.isInteger(n) || Math.abs((n % 1) - 0.5) < 0.01));
+  const out = [];
+  for (const s of parte.split(',').map((x) => x.trim()).filter(Boolean)) {
+    // Rango "30/31" → 30 y 31
+    if (s.includes('/')) {
+      const nums = s.split('/').map((x) => aNumero(x.trim()));
+      for (const n of nums) {
+        if (!Number.isNaN(n) && ((n >= TALLA_MIN && n <= TALLA_MAX) || (n >= TALLA_PANTALON_MIN && n <= TALLA_PANTALON_MAX)) && (Number.isInteger(n) || Math.abs((n % 1) - 0.5) < 0.01)) out.push(n);
+      }
+    } else {
+      const n = aNumero(s);
+      if (!Number.isNaN(n) && ((n >= TALLA_MIN && n <= TALLA_MAX) || (n >= TALLA_PANTALON_MIN && n <= TALLA_PANTALON_MAX)) && (Number.isInteger(n) || Math.abs((n % 1) - 0.5) < 0.01)) out.push(n);
+    }
+  }
+  return out;
 }
 
 /** Extrae valores "X cm" de una línea (ej. "25.5 cm" → ["25.5 cm"]). */
@@ -588,6 +654,10 @@ export function extraerPrecios(texto) {
   let yaHayPrecioClaro = false;
 
   for (const linea of lineas) {
+    // "Quedan 2 plateados 1 dorado", "Últimos 2 para lo que no confirme": stock, no precios
+    if (/^quedan\s+\d+/i.test(linea) || /^últimos?\s+\d+/i.test(linea)) continue;
+    // "Stock solo 1", "solo 1 und": stock/cantidad, no precio
+    if (/^stock\s+solo\s+\d+/i.test(linea) || /^solo\s+\d+\s*(?:unidades?|und|stock)?\s*$/i.test(linea)) continue;
     // Talla primero (ej. "24 M") o rango edad (ej. "8-10" para NIÑO): no tomar como precios
     if (lineaEsTallaBebePrimero(linea) || lineaEsRangoTallaEdad(linea)) continue;
     // Si ya hubo un precio claro y esta línea es solo tallas (calzado 6-15, pantalón 26-42, o "25.5 cm"), no tomar como precios
@@ -603,6 +673,28 @@ export function extraerPrecios(texto) {
       }
       continue;
     }
+    // Caso "Tengo 4 un a 19.99": cantidad + precio — extraer solo el precio
+    const matchTengo = linea.match(/\btengo\s+\d+\s*(?:un\s*)?a\s+(\d+(?:[.,]\d{1,2})?)\s*$/i);
+    if (matchTengo) {
+      const valor = aNumero(matchTengo[1]);
+      if (!Number.isNaN(valor) && valor > 0) {
+        resultados.push({ precio: valor, enSoles: false, conSignoDolar: false, nombre: undefined });
+        yaHayPrecioClaro = true;
+      }
+      continue;
+    }
+
+    // Caso "49.99 solo 1", "Solo 1 21.99": precio + stock — extraer solo el precio (no 1 como precio)
+    const matchPrecioSolo = linea.match(/^(\d+(?:[.,]\d{1,2})?)\s+solo\s+\d+/i) || linea.match(/^solo\s+\d+\s+(\d+(?:[.,]\d{1,2})?)\s*$/i);
+    if (matchPrecioSolo) {
+      const valor = aNumero(matchPrecioSolo[1]);
+      if (!Number.isNaN(valor) && valor > 0) {
+        resultados.push({ precio: valor, enSoles: false, conSignoDolar: false, nombre: undefined });
+        yaHayPrecioClaro = true;
+      }
+      continue;
+    }
+
     // Caso: "29.99 precio regular 42.50" → precio venta 29.99, precio anterior 42.50 (para mostrar rebaja)
     const matchPrecioRegular = linea.match(/^(\d+(?:[.,]\d{1,2})?)\s+precio\s+regular\s+(\d+(?:[.,]\d{1,2})?)\s*$/i);
     if (matchPrecioRegular) {
@@ -620,6 +712,43 @@ export function extraerPrecios(texto) {
       }
       continue;
     }
+    // Caso: "Conjunto 35 y 32" — nombre + precio1 y precio2 (dos prendas, dos precios)
+    const patronNombreDosPrecios = /^([A-Za-zÁ-ÿ]+(?:\s+[A-Za-zÁ-ÿ]+)*?)\s+(\d+(?:[.,]\d+)?)\s+y\s+(\d+(?:[.,]\d+)?)\s*$/i;
+    const matchNombreDosPrecios = linea.match(patronNombreDosPrecios);
+    if (matchNombreDosPrecios) {
+      const nombre = matchNombreDosPrecios[1]?.trim();
+      const valor1 = aNumero(matchNombreDosPrecios[2]);
+      const valor2 = aNumero(matchNombreDosPrecios[3]);
+      if (!Number.isNaN(valor1) && valor1 > 0) {
+        resultados.push({ precio: valor1, enSoles: false, conSignoDolar: false, nombre: nombre?.slice(0, 60) });
+        if (esPrecioClaro(valor1)) yaHayPrecioClaro = true;
+      }
+      if (!Number.isNaN(valor2) && valor2 > 0) {
+        resultados.push({ precio: valor2, enSoles: false, conSignoDolar: false, nombre: nombre?.slice(0, 60) });
+        if (esPrecioClaro(valor2)) yaHayPrecioClaro = true;
+      }
+      continue;
+    }
+
+    // Caso: "14.99 clásico y 17.50 shimmer" — precio1 nombre1 y precio2 nombre2
+    const patronPrecioNombreY = /^(\d+(?:[.,]\d+)?)\s+([A-Za-zÁ-ÿ]+)\s+y\s+(\d+(?:[.,]\d+)?)\s+([A-Za-zÁ-ÿ]+)\s*$/i;
+    const matchPrecioNombreY = linea.match(patronPrecioNombreY);
+    if (matchPrecioNombreY) {
+      const valor1 = aNumero(matchPrecioNombreY[1]);
+      const nombre1 = matchPrecioNombreY[2]?.trim();
+      const valor2 = aNumero(matchPrecioNombreY[3]);
+      const nombre2 = matchPrecioNombreY[4]?.trim();
+      if (!Number.isNaN(valor1) && valor1 > 0) {
+        resultados.push({ precio: valor1, enSoles: false, conSignoDolar: false, nombre: nombre1?.slice(0, 60) });
+        if (esPrecioClaro(valor1)) yaHayPrecioClaro = true;
+      }
+      if (!Number.isNaN(valor2) && valor2 > 0) {
+        resultados.push({ precio: valor2, enSoles: false, conSignoDolar: false, nombre: nombre2?.slice(0, 60) });
+        if (esPrecioClaro(valor2)) yaHayPrecioClaro = true;
+      }
+      continue;
+    }
+
     // Caso 1: Separador " y " con nombres: "Tomatodo 5.5 y bowl 7", "Set 16 y plato 18"
     const patronYConNombres = /^([A-Za-zÁ-ÿ]+(?:\s+[A-Za-zÁ-ÿ]+)*?)\s+(\d+(?:[.,]\d+)?)\s+y\s+([A-Za-zÁ-ÿ]+(?:\s+[A-Za-zÁ-ÿ]+)*?)\s+(\d+(?:[.,]\d+)?)(?:\s+(.+))?$/i;
     const matchYNombres = linea.match(patronYConNombres);
@@ -695,8 +824,15 @@ export function extraerPrecios(texto) {
 
   // Si no encontramos por líneas, intentar todo el texto como un solo bloque
   if (resultados.length === 0) {
-    const r = extraerDeLinea(texto.trim());
-    if (r) resultados.push(r);
+    const textoTrim = texto.trim();
+    const skipFallback = /^stock\s+solo\s+\d+/i.test(textoTrim) ||
+      /^solo\s+\d+\s*(?:unidades?|und|stock)?\s*$/i.test(textoTrim) ||
+      /^quedan\s+\d+/i.test(textoTrim) ||
+      /^últimos?\s+\d+/i.test(textoTrim);
+    if (!skipFallback) {
+      const r = extraerDeLinea(textoTrim);
+      if (r) resultados.push(r);
+    }
   }
 
   // El grupo origen solo envía USD: no marcar soles salvo que el texto tenga "S/" explícito (con barra)
@@ -787,14 +923,20 @@ function lineaSoloTallasOLetras(linea) {
 const RE_NEWLINE = /\r?\n|\r/;
 
 /**
- * Números que son CANTIDAD (unidades) y no tallas: "solo 3 und", "6 und", "Llevando 2", "Hay 4 und".
+ * Números que son CANTIDAD (unidades) y no tallas: "solo 3 und", "6 und", "pack 2", "7 pares", "Hay 4 und".
  */
 function numerosQueSonCantidad(texto) {
   const cantidades = new Set();
   const m1 = texto.matchAll(/(\d+)\s*(?:und|unidades?)\b/gi);
   for (const m of m1) cantidades.add(aNumero(m[1]));
-  const m2 = texto.matchAll(/\bllevando\s+(\d+)\s/gi);
+  const m2 = texto.matchAll(/\bllevando\s+(\d+)\b/gi);
   for (const m of m2) cantidades.add(parseInt(m[1], 10));
+  const m3 = texto.matchAll(/\bpack\s+(\d+)\b/gi);
+  for (const m of m3) cantidades.add(parseInt(m[1], 10));
+  const m4 = texto.matchAll(/(\d+)\s*(?:pares?|medias?|medías?)\b/gi);
+  for (const m of m4) cantidades.add(parseInt(m[1], 10));
+  const m5 = texto.matchAll(/\btengo\s+(\d+)\b/gi);
+  for (const m of m5) cantidades.add(parseInt(m[1], 10));
   return cantidades;
 }
 
@@ -858,7 +1000,7 @@ export function extraerTallas(texto) {
   const tallasCm = [];
   const tallasPrimero = []; // "24 M" (talla antes del precio)
   const tallasRangoEdad = []; // "8-10" (rango edad niño)
-  let yaHayPrecioClaro = false;
+  let yaHayPrecioClaro = algunaLineaTienePrecioClaro(lineas); // Para extraer tallas en "Set Us Polo\nS\n22.99"
 
   for (const linea of lineas) {
     if (lineaEsTallaBebePrimero(linea)) {
@@ -906,7 +1048,7 @@ export function extraerTallas(texto) {
             for (const v of numerosLinea) {
               if (v >= TALLA_PANTALON_MIN && v <= TALLA_PANTALON_MAX) tallasNumeros.push(v);
             }
-          } else if (/\btallas\s+[\d,\s.5]+$/i.test(linea)) {
+          } else if (/\btallas\s+[\d,\s/.5]+$/i.test(linea)) {
             for (const v of extraerTallasDePrefijoTallas(linea)) tallasNumeros.push(v);
           } else if (/^\d+(?:,\d+)+\s+\d+[.,]\d{1,2}\s*$/.test(linea)) {
             for (const v of extraerTallasDeLineaTallasPrimeroPrecioFinal(linea)) tallasNumeros.push(v);
@@ -951,12 +1093,16 @@ export function esNombreProductoValido(nombre) {
   const palabra = n.toLowerCase();
   const invalidos = [
     /^(buenos\s+d[ií]as|hola|buenas|chic[@a]s?|gracias)/i,
+    /^[+]?\s*pedido$/i,   // "+ pedido", "a pedido"
+    /^stock$/i,
+    /^uno\s*a$/i,   // "Uno a" (one at)
+    /^re\s*stock$/i,
+    /^\d+\s*(?:ml|oz|onz|g|kg|lb)$/i,  // "100 ml" (capacidad, no nombre)
     /^(mujer|hombre)\s+[a-z]{1,3}$/i,  // "Mujer L", "Hombre M"
     /^[a-z]{1,3}\s+(mujer|hombre|nino|niño)$/i,  // "xs mujer", "L hombre"
     /^solo\s+(xs?|s|m|l|xl|xxl|xxs|\d+)\s*$/i,
     /^hay\s+(tallas?|\d+\s*und)/i,
     /^tallas?\s+/i,
-    /^desde\s*$/i,
     /^(m|s|l|xl|xxl|xxs|xs)\s+(y|a)\s+(m|s|l|xl|xxl|xxs|xs)/i,
     /^[msxl]+\s+a\s+[msxl]+\s*(mujer|hombre)?$/i,
     /^mujer[,.]?\s*hay\s*tallas?$/i,

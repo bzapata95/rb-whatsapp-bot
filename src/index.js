@@ -11,6 +11,7 @@ import { logMensajeProcesado, logEvento } from './logger.js';
 
 const GRUPO_ORIGEN = config.GRUPO_ORIGEN_ID;
 const GRUPO_DESTINO = config.GRUPO_DESTINO_ID;
+const GRUPO_RASTREO = config.GRUPO_RASTREO_ID || '';
 const TIPO_CAMBIO = config.TIPO_CAMBIO_SOLES;
 const MONEDA_ORIGEN = config.MONEDA_ORIGEN;
 
@@ -126,12 +127,68 @@ function guardarMapeoOrigenDestino(idOrigen, idDestino) {
   }
 }
 
+/** Envía al grupo de rastreo el mensaje ORIGINAL con cabecera de metadatos para análisis de precios. */
+async function enviarMensajeRastreo(msg, chat, cuerpo) {
+  if (!GRUPO_RASTREO) return;
+  try {
+    const idChat = chat.id._serialized;
+    const nombreGrupo = chat.name;
+    const idMsg = msg.id._serialized;
+    const ts = msg.timestamp ? msg.timestamp * 1000 : Date.now();
+    const fecha = new Date(ts).toLocaleString('es-PE', {
+      dateStyle: 'short',
+      timeStyle: 'medium',
+    });
+    let pushname = '';
+    let numero = '';
+    let name = '';
+    try {
+      const contact = await msg.getContact();
+      pushname = contact.pushname || '';
+      numero = contact.number || msg.author?.split('@')[0] || '';
+      name = contact.name || '';
+    } catch (_) {}
+
+    const lineas = [
+      `📅 ${fecha}`,
+      `👤 Enviado por: ${pushname || name || '(desconocido)'}`,
+      pushname && pushname !== name ? `📱 Display WSP: ${pushname}` : null,
+      numero ? `📞 Número: ${numero}` : null,
+      `🏷️ Grupo: ${nombreGrupo} (${idChat})`,
+      msg.isForwarded ? '↗️ Reenviado' : null,
+      `🆔 Msg ID: ${idMsg}`,
+      '',
+      '--- Texto original ---',
+      cuerpo || '(sin texto)',
+    ].filter(Boolean);
+
+    const cabeceraYTexto = lineas.join('\n');
+
+    if (msg.hasMedia) {
+      const media = await msg.downloadMedia();
+      if (media) {
+        await client.sendMessage(GRUPO_RASTREO, media, { caption: cabeceraYTexto });
+      } else {
+        await client.sendMessage(GRUPO_RASTREO, cabeceraYTexto);
+      }
+    } else {
+      await client.sendMessage(GRUPO_RASTREO, cabeceraYTexto);
+    }
+    console.log('[Rastreo] Mensaje original enviado a grupo rastreo');
+  } catch (err) {
+    console.warn('Error al enviar mensaje a grupo rastreo:', err.message);
+  }
+}
+
 /** Construye el texto a enviar al destino a partir del cuerpo: precios a soles, tallas, alertas. */
 function construirTextoDestino(cuerpo) {
   const productos = extraerPrecios(cuerpo);
   const tienePrecio = productos.length > 0;
-  const tallas = extraerTallas(cuerpo);
+  let tallas = extraerTallas(cuerpo);
   const alertasStock = extraerAlertasStock(cuerpo);
+  // No incluir como tallas números que son precios de productos (ej. "28" puede ser precio USD o talla pantalón)
+  const preciosProductos = new Set(productos.map((p) => p.precio));
+  tallas = tallas.filter((t) => typeof t !== 'number' || !preciosProductos.has(t));
   if (!tienePrecio) return { textoDestino: cuerpo, productos: [], tallas, alertasStock, tienePrecio: false };
   const lineasSoles = [];
   for (const item of productos) {
@@ -141,8 +198,25 @@ function construirTextoDestino(cuerpo) {
       precioSoles = Math.ceil(item.precio);
       if (item.precioRegular) precioRegularSoles = Math.ceil(item.precioRegular);
     } else if (item.conSignoDolar) {
-      precioSoles = Math.ceil(item.precio * TIPO_CAMBIO);
-      if (item.precioRegular) precioRegularSoles = Math.ceil(item.precioRegular * TIPO_CAMBIO);
+      // Precios con $ usan la misma fórmula que sin $ (impuesto, shopper, ganancia, envío)
+      const { totalSoles: s } = calcularPrecioVenta(item.precio, {
+        porcentajeImpuesto: config.PORCENTAJE_IMPUESTO,
+        porcentajeShopper: config.PORCENTAJE_SHOPPER,
+        porcentajeGanancia: config.PORCENTAJE_GANANCIA,
+        envioUSD: config.ENVIO_USD,
+        tipoCambioSoles: TIPO_CAMBIO,
+      });
+      precioSoles = s;
+      if (item.precioRegular) {
+        const { totalSoles: regSoles } = calcularPrecioVenta(item.precioRegular, {
+          porcentajeImpuesto: config.PORCENTAJE_IMPUESTO,
+          porcentajeShopper: config.PORCENTAJE_SHOPPER,
+          porcentajeGanancia: config.PORCENTAJE_GANANCIA,
+          envioUSD: config.ENVIO_USD,
+          tipoCambioSoles: TIPO_CAMBIO,
+        });
+        precioRegularSoles = regSoles;
+      }
     } else {
       const { totalSoles } = calcularPrecioVenta(item.precio, {
         porcentajeImpuesto: config.PORCENTAJE_IMPUESTO,
@@ -165,11 +239,13 @@ function construirTextoDestino(cuerpo) {
     }
     const nombreValido = item.nombre && esNombreProductoValido(item.nombre);
     const prefixCantidad = item.cantidad && item.cantidad > 1 ? `${item.cantidad} x ` : '';
+    const esDesde = nombreValido && /^desde$/i.test(item.nombre.trim());
+    const disclaimerDesde = esDesde ? ' (el precio puede variar por tamaño o modelo)' : '';
     if (precioRegularSoles != null) {
       lineasSoles.push(`💰 ${prefixCantidad}Precio: S/ ${precioSoles} – Antes S/ ${precioRegularSoles}`);
     } else {
       const parteNombre = nombreValido ? `${item.nombre} – ` : '';
-      lineasSoles.push(`💰 ${prefixCantidad}${parteNombre}Precio: S/ ${precioSoles}`);
+      lineasSoles.push(`💰 ${prefixCantidad}${parteNombre}Precio: S/ ${precioSoles}${disclaimerDesde}`);
     }
   }
   if (tallas.length > 0) lineasSoles.push(`📏 Tallas disponibles: ${tallas.join(', ')}`);
@@ -308,7 +384,13 @@ client.on('message', async (msg) => {
   if (tienePrecio) {
     for (const item of productos) {
       const precioSoles = item.enSoles ? Math.ceil(item.precio) : item.conSignoDolar
-        ? Math.ceil(item.precio * TIPO_CAMBIO)
+        ? calcularPrecioVenta(item.precio, {
+            porcentajeImpuesto: config.PORCENTAJE_IMPUESTO,
+            porcentajeShopper: config.PORCENTAJE_SHOPPER,
+            porcentajeGanancia: config.PORCENTAJE_GANANCIA,
+            envioUSD: config.ENVIO_USD,
+            tipoCambioSoles: TIPO_CAMBIO,
+          }).totalSoles
         : calcularPrecioVenta(item.precio, {
             porcentajeImpuesto: config.PORCENTAJE_IMPUESTO,
             porcentajeShopper: config.PORCENTAJE_SHOPPER,
@@ -323,6 +405,8 @@ client.on('message', async (msg) => {
   const idOrigen = msg.id._serialized;
 
   try {
+    await enviarMensajeRastreo(msg, chat, cuerpo);
+
     // 1) Solo foto (sin precio): enviar imagen con el texto original como caption si hay
     if (tieneMedia && !tienePrecio) {
       const media = await msg.downloadMedia();

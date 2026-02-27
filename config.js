@@ -27,6 +27,10 @@ export const config = {
   // ID del grupo al que se ENVÍAN los productos ya con precio en S/
   GRUPO_DESTINO_ID: process.env.GRUPO_DESTINO_ID || '',
 
+  // ID del grupo de rastreo: recibe el mensaje ORIGINAL (texto + foto) con cabecera de metadatos
+  // Útil para detectar patrones de precios y mejorar el parseo. Vacío = desactivado.
+  GRUPO_RASTREO_ID: process.env.GRUPO_RASTREO_ID || '',
+
   // Mensaje de bienvenida cuando agregan usuarios al grupo destino (en .env usa \n para saltos de línea)
   MENSAJE_BIENVENIDA: process.env.MENSAJE_BIENVENIDA
     ? String(process.env.MENSAJE_BIENVENIDA).replace(/\\n/g, '\n')
