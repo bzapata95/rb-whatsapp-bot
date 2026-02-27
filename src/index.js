@@ -136,6 +136,7 @@ async function enviarMensajeRastreo(msg, chat, cuerpo) {
     const idMsg = msg.id._serialized;
     const ts = msg.timestamp ? msg.timestamp * 1000 : Date.now();
     const fecha = new Date(ts).toLocaleString('es-PE', {
+      timeZone: 'America/Lima',
       dateStyle: 'short',
       timeStyle: 'medium',
     });
