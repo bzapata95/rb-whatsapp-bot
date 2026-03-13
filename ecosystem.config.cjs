@@ -9,7 +9,7 @@ module.exports = {
   apps: [
     {
       name: 'rb-whatsapp',
-      script: 'src/index.js --name rb-whats --cron-restart="0 5 * * *',
+      script: 'src/index.js --name rb-whatsapp --cron-restart="0 5 * * *"',
       cwd: path.resolve(__dirname),
       interpreter: 'node',
       env: {
