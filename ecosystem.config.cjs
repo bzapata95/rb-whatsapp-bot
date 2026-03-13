@@ -9,13 +9,14 @@ module.exports = {
   apps: [
     {
       name: 'rb-whatsapp',
-      script: 'src/index.js --name rb-whatsapp --cron-restart="0 5 * * *"',
+      script: 'src/index.js',
       cwd: path.resolve(__dirname),
       interpreter: 'node',
       env: {
         NODE_ENV: 'production',
       },
       autorestart: true,
+      cron_restart: '0 5 * * *', // Reinicio diario 05:00 (opcional; quitar si no quieres)
       watch: false,
       max_restarts: 10,
       min_uptime: '10s',
