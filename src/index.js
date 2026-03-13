@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = pkg;
 import qrcode from 'qrcode-terminal';
@@ -21,10 +22,11 @@ const faltaConfigurarGrupos = !GRUPO_ORIGEN || !GRUPO_DESTINO;
 const MAPA_ORIGEN_DESTINO = new Map();
 const MAX_MAPA_MENSAJES = 500;
 
-// Quitar bloqueo de Chromium si quedó de otro proceso/servidor (evita "profile is in use by process X on another computer")
-try {
-  const authDir = path.join(process.cwd(), '.wwebjs_auth');
-  if (fs.existsSync(authDir)) {
+/** Quita locks de Chromium para permitir nueva instancia (evita "profile is in use" / "browser is already running"). */
+function limpiarBloqueoChromium() {
+  try {
+    const authDir = path.join(process.cwd(), '.wwebjs_auth');
+    if (!fs.existsSync(authDir)) return;
     const sessionLock = path.join(authDir, 'session', 'SingletonLock');
     if (fs.existsSync(sessionLock)) {
       fs.unlinkSync(sessionLock);
@@ -40,8 +42,23 @@ try {
         }
       }
     }
-  }
-} catch (_) {}
+  } catch (_) {}
+}
+
+/** En Linux, mata procesos Chrome/Chromium que usan nuestro perfil (zombies tras crash). */
+function matarChromiumZombie() {
+  if (process.platform !== 'linux') return;
+  try {
+    const authDir = path.join(process.cwd(), '.wwebjs_auth');
+    if (!fs.existsSync(authDir)) return;
+    // Solo matar Chrome/Chromium con --user-data-dir apuntando a nuestro perfil (no el proceso Node)
+    execSync('pkill -f "user-data-dir.*\\.wwebjs_auth" || true', { stdio: 'ignore', timeout: 5000 });
+    console.log('Procesos Chrome zombie (perfil wwebjs) terminados si existían');
+  } catch (_) {}
+}
+
+limpiarBloqueoChromium();
+matarChromiumZombie();
 
 // Ruta a Chrome/Chromium (env CHROME_PATH o PUPPETEER_EXECUTABLE_PATH para override)
 function resolveChromePath() {
@@ -556,6 +573,7 @@ client.on('message', async (msg) => {
 // Reintentos al iniciar (en servidor la página puede navegar y destruir el context)
 const MAX_INIT_RETRIES = 5;
 const INIT_RETRY_DELAY_MS = 8000;
+const DELAY_DESPUES_MATAR_CHROME_MS = 5000;
 
 async function initWithRetry() {
   for (let attempt = 1; attempt <= MAX_INIT_RETRIES; attempt++) {
@@ -564,12 +582,19 @@ async function initWithRetry() {
       return;
     } catch (err) {
       const isRetryable =
-        /Execution context was destroyed|Requesting main frame too early|Target closed|Protocol error/i.test(err.message);
+        /Execution context was destroyed|Requesting main frame too early|Target closed|Protocol error|browser is already running/i.test(
+          err.message
+        );
       if (isRetryable && attempt < MAX_INIT_RETRIES) {
         console.warn(
-          `Error al iniciar (intento ${attempt}/${MAX_INIT_RETRIES}): ${err.message}. Reintentando en ${INIT_RETRY_DELAY_MS / 1000}s...`
+          `Error al iniciar (intento ${attempt}/${MAX_INIT_RETRIES}): ${err.message}. Reintentando...`
         );
-        await new Promise((r) => setTimeout(r, INIT_RETRY_DELAY_MS));
+        limpiarBloqueoChromium();
+        matarChromiumZombie();
+        const delay =
+          /browser is already running/i.test(err.message) ? DELAY_DESPUES_MATAR_CHROME_MS : INIT_RETRY_DELAY_MS;
+        console.log(`Esperando ${delay / 1000}s antes de reintentar...`);
+        await new Promise((r) => setTimeout(r, delay));
       } else {
         console.error('Error al iniciar:', err);
         process.exit(1);
