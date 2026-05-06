@@ -19,6 +19,7 @@
  * - Precio y debajo talla US + género: "12.99" luego "7 hombre" → una sola oferta, talla mostrada "7 (Hombre)"
  * - Precio + línea tallas + género: "9.5 y 10 hombre", "9, 9.5 y 10 hombre", "8/9 hombre" → un precio; tallas con (Hombre/Mujer/Niño), no USD por número
  * - Precio + "8.5 KL": talla + sigla marca (2–6 MAYÚSCULAS), no segundo precio con nombre "KL"
+ * - Bracieres sostén: "34b, 34c y 36c 24.99" → tallas 34B, 34C, 36C y un precio 24.99 (copa = letras tras el contorno)
  * - Una línea: precio + "hay" + tallas pantalón o calzado: "33.7 hay 39 y 40"
  * - Sólo lista con prefijo "Tallas"/"Talla": "Tallas 38,41,36 y 37"
  * - Precio y línea niña/niño + tallas calzado bebé: "9.99" + "Niña 1, 2 y 3" (1–15 US; incluye talla 1)
@@ -54,6 +55,10 @@ const TALLA_CALZADO_BEBE_MIN = 1;
 /** Rango de tallas de pantalón (cintura en pulgadas): 24-42. Usado para detectar "26, 28, 30, 31" debajo del precio. */
 const TALLA_PANTALON_MIN = 24;
 const TALLA_PANTALON_MAX = 42;
+
+/** Contorno (tiro) típico sostén US; número + copa(s) tipo 34B, 36DD */
+const BANDA_BRASIER_MIN = 26;
+const BANDA_BRASIER_MAX = 52;
 
 /**
  * Indica si un número parece talla (calzado, ropa, laptop) y no precio.
@@ -787,6 +792,42 @@ function etiquetaTallaCalzadoMarciaSigla(linea) {
   return `${v} (${sigla})`;
 }
 
+/** Token "34b", "36DD": banda + copa (solo letras A-Z, 1–4). */
+function normalizarEtiquetaTallaBrasier(token) {
+  const t = token.trim();
+  const m = t.match(/^(\d{2,3})([a-zA-Z]{1,4})$/u);
+  if (!m) return null;
+  const band = parseInt(m[1], 10);
+  if (band < BANDA_BRASIER_MIN || band > BANDA_BRASIER_MAX) return null;
+  const cup = m[2].toUpperCase();
+  if (!/^[A-Z]+$/.test(cup) || cup.length < 1 || cup.length > 4) return null;
+  return `${band}${cup}`;
+}
+
+/**
+ * "34b, 34c y 36c 24.99": lista de tallas sostén y precio XX.XX final (obligatorio dos decimales de precio).
+ * @returns {{ precio: number, tallasEtiquetas: string[] } | null}
+ */
+function parseLineaListaTallasBrasierYPrecioFinal(linea) {
+  const l = linea.trim();
+  const mPrecio = l.match(/\s+(\d+[.,]\d{2})\s*$/);
+  if (!mPrecio) return null;
+  const precio = aNumero(mPrecio[1]);
+  if (Number.isNaN(precio) || precio <= 0) return null;
+  const cuerpo = l.slice(0, l.length - mPrecio[0].length).trim();
+  if (!cuerpo) return null;
+  if (!/^[\d\s,.ya-z]+$/iu.test(cuerpo.replace(/\s+/g, ' '))) return null;
+  const tokens = splitListaTallasTokens(cuerpo);
+  if (tokens.length < 1) return null;
+  const tallasEtiquetas = [];
+  for (const tok of tokens) {
+    const et = normalizarEtiquetaTallaBrasier(tok.trim());
+    if (!et) return null;
+    tallasEtiquetas.push(et);
+  }
+  return { precio, tallasEtiquetas };
+}
+
 /** Extrae tallas de "7,10,11 24.99" — números antes del precio, separados por coma. */
 function extraerTallasDeLineaTallasPrimeroPrecioFinal(linea) {
   const m = linea.match(/^(\d+(?:,\d+)+)\s+\d+[.,]\d{1,2}\s*$/);
@@ -1003,6 +1044,17 @@ export function extraerPrecios(texto) {
     if (lineaEsTallaGeneroCalzado(linea)) continue;
     if (lineaEsListaTallasCalzadoConGeneroFinal(linea)) continue;
     if (lineaEsTallaCalzadoYMarciaSigla(linea)) continue;
+    const hitBrasier = parseLineaListaTallasBrasierYPrecioFinal(linea);
+    if (hitBrasier) {
+      resultados.push({
+        precio: hitBrasier.precio,
+        enSoles: false,
+        conSignoDolar: false,
+        nombre: undefined,
+      });
+      yaHayPrecioClaro = true;
+      continue;
+    }
     // Caso "Tengo 4 un a 19.99": cantidad + precio — extraer solo el precio
     const matchTengo = linea.match(/\btengo\s+\d+\s*(?:un\s*)?a\s+(\d+(?:[.,]\d{1,2})?)\s*$/i);
     if (matchTengo) {
@@ -1459,6 +1511,7 @@ export function extraerTallas(texto) {
   }
 
   const tallasNumeros = [];
+  const tallasBrasier = []; // ej. "34B", "36C" (sostén / copas)
   const tallasLetras = new Set();
   const tallasCm = [];
   const tallasPrimero = []; // "24 M" (talla antes del precio)
@@ -1467,6 +1520,11 @@ export function extraerTallas(texto) {
   let yaHayPrecioClaro = algunaLineaTienePrecioClaro(lineas); // Para extraer tallas en "Set Us Polo\nS\n22.99"
 
   for (const linea of lineas) {
+    const hitBrasierTallas = parseLineaListaTallasBrasierYPrecioFinal(linea);
+    if (hitBrasierTallas) {
+      for (const et of hitBrasierTallas.tallasEtiquetas) tallasBrasier.push(et);
+      continue;
+    }
     if (lineaEsTallaBebePrimero(linea)) {
       tallasPrimero.push(linea);
       continue;
@@ -1591,7 +1649,16 @@ export function extraerTallas(texto) {
   const primeroUnicas = yaHayPrecioClaro ? [...new Set(tallasPrimero)] : [];
   const rangoEdadUnicas = yaHayPrecioClaro ? [...new Set(tallasRangoEdad)] : [];
   const tallaGeneroUnicas = yaHayPrecioClaro ? [...new Set(tallasTallaGenero)] : [];
-  return [...nums, ...tallaGeneroUnicas, ...cmUnicas, ...letrasOrdenadas, ...primeroUnicas, ...rangoEdadUnicas];
+  const brasierUnicas = yaHayPrecioClaro ? [...new Set(tallasBrasier)] : [];
+  return [
+    ...nums,
+    ...tallaGeneroUnicas,
+    ...brasierUnicas,
+    ...cmUnicas,
+    ...letrasOrdenadas,
+    ...primeroUnicas,
+    ...rangoEdadUnicas,
+  ];
 }
 
 /**
