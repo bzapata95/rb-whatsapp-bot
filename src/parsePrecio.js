@@ -17,7 +17,8 @@
  * - Tallas primero, precio al final: "7,10,11 24.99" (7,10,11=tallas, 24.99=precio)
  * - Ropa infantil rangos años/talla: segunda línea "8-10", "8-10, 12-14" o "2-3, 4-5, …, 16" (tramo suelto; se muestra la línea tal cual)
  * - Precio y debajo talla US + género: "12.99" luego "7 hombre" → una sola oferta, talla mostrada "7 (Hombre)"
- * - Precio + línea "9.5 y 10 hombre" → un precio; tallas "9.5 (Hombre)" y "10 (Hombre)", no USD 9.5 ni 10 con nombre hombre
+ * - Precio + línea tallas + género: "9.5 y 10 hombre", "9, 9.5 y 10 hombre", "8/9 hombre" → un precio; tallas con (Hombre/Mujer/Niño), no USD por número
+ * - Precio + "8.5 KL": talla + sigla marca (2–6 MAYÚSCULAS), no segundo precio con nombre "KL"
  * - Una línea: precio + "hay" + tallas pantalón o calzado: "33.7 hay 39 y 40"
  * - Sólo lista con prefijo "Tallas"/"Talla": "Tallas 38,41,36 y 37"
  * - Precio y línea niña/niño + tallas calzado bebé: "9.99" + "Niña 1, 2 y 3" (1–15 US; incluye talla 1)
@@ -702,28 +703,53 @@ function lineaEsTallaGeneroCalzado(linea) {
   return valorNumeroTallaCalzadoParaGenero(m[1]) != null;
 }
 
-const RE_DOS_TALLAS_Y_GENERO =
-  /^(\d+(?:[.,]\d+)?)\s+y\s+(\d+(?:[.,]\d+)?)\s+(hombre|mujer|ni[ñn]o)\s*$/iu;
+/** Género al final de línea (tallas calzado delante). */
+const RE_GENERO_TALLAS_CALZADO_FINAL = /\s+(hombre|mujer|ni[ñn]o)\s*$/iu;
 
-/** Ej. "9.5 y 10 hombre": dos tallas disponibles con el mismo género. */
-function lineaEsDosTallasYyGeneroCalzado(linea) {
-  const m = linea.trim().match(RE_DOS_TALLAS_Y_GENERO);
-  if (!m) return false;
-  return (
-    valorNumeroTallaCalzadoParaGenero(m[1]) != null &&
-    valorNumeroTallaCalzadoParaGenero(m[2]) != null
-  );
+/**
+ * "9.5 y 10 hombre", "9, 9.5 y 10 mujer", "8 y 9.5 niño", "9/10 hombre".
+ * No cubre una sola talla ("7 hombre" → lineaEsTallaGeneroCalzado).
+ */
+function matchListaTallasCalzadoConGeneroFinal(linea) {
+  const l = linea.trim();
+  const mg = l.match(RE_GENERO_TALLAS_CALZADO_FINAL);
+  if (!mg) return null;
+  const cuerpo = l.slice(0, l.length - mg[0].length).trim();
+  const genero = mg[1].toLowerCase();
+  if (!cuerpo) return null;
+  if (!/^[\d\s,.y\/]+$/iu.test(cuerpo)) return null;
+  const tokens = splitListaTallasTokens(cuerpo);
+  if (tokens.length === 0) return null;
+  const vals = [];
+  for (const t of tokens) {
+    const s = t.trim();
+    if (!s) return null;
+    if (s.includes('/')) {
+      for (const p of s.split('/')) {
+        const v = valorNumeroTallaCalzadoParaGenero(p.trim());
+        if (v == null) return null;
+        vals.push(v);
+      }
+      continue;
+    }
+    const v = valorNumeroTallaCalzadoParaGenero(s);
+    if (v == null) return null;
+    vals.push(v);
+  }
+  if (vals.length < 2) return null;
+  return { vals, genero };
 }
 
-function etiquetasDosTallasYyGeneroCalzado(linea) {
-  const m = linea.trim().match(RE_DOS_TALLAS_Y_GENERO);
-  if (!m) return [];
-  const v1 = valorNumeroTallaCalzadoParaGenero(m[1]);
-  const v2 = valorNumeroTallaCalzadoParaGenero(m[2]);
-  if (v1 == null || v2 == null) return [];
-  const g = m[3].toLowerCase();
-  const nombre = g === 'mujer' ? 'Mujer' : g === 'hombre' ? 'Hombre' : 'Niño';
-  return [`${v1} (${nombre})`, `${v2} (${nombre})`];
+function lineaEsListaTallasCalzadoConGeneroFinal(linea) {
+  return matchListaTallasCalzadoConGeneroFinal(linea) != null;
+}
+
+function etiquetasListaTallasCalzadoConGeneroFinal(linea) {
+  const hit = matchListaTallasCalzadoConGeneroFinal(linea);
+  if (!hit) return [];
+  const nombre =
+    hit.genero === 'mujer' ? 'Mujer' : hit.genero === 'hombre' ? 'Hombre' : 'Niño';
+  return hit.vals.map((v) => `${v} (${nombre})`);
 }
 
 /** Etiqueta de género para salida (ej. "7 (Hombre)"). */
@@ -735,6 +761,30 @@ function etiquetaTallaGenero(linea) {
   const nombre =
     g === 'mujer' ? 'Mujer' : g === 'hombre' ? 'Hombre' : 'Niño';
   return `${v} (${nombre})`;
+}
+
+/**
+ * "8.5 KL", "10 NB": talla US válida + palabra sólo MAYÚSCULAS 2–6 letras (sigla de marca/línea).
+ * Evita numeroPrimero ("8.5" + nombre "KL") cuando debajo del precio es talla + marca.
+ */
+function lineaEsTallaCalzadoYMarciaSigla(linea) {
+  const l = linea.trim();
+  const m = l.match(/^(\d+(?:[.,]\d+)?)\s+([A-ZÁÉÍÓÚÑ]{2,6})\s*$/u);
+  if (!m) return false;
+  if (valorNumeroTallaCalzadoParaGenero(m[1]) == null) return false;
+  const sigla = m[2];
+  if (/^(US|UK|XS|XL|XX|ML|OZ|CM|MM)$/iu.test(sigla)) return false;
+  return true;
+}
+
+function etiquetaTallaCalzadoMarciaSigla(linea) {
+  const m = linea.trim().match(/^(\d+(?:[.,]\d+)?)\s+([A-ZÁÉÍÓÚÑ]{2,6})\s*$/u);
+  if (!m) return null;
+  const v = valorNumeroTallaCalzadoParaGenero(m[1]);
+  if (v == null) return null;
+  const sigla = m[2];
+  if (/^(US|UK|XS|XL|XX|ML|OZ|CM|MM)$/iu.test(sigla)) return null;
+  return `${v} (${sigla})`;
 }
 
 /** Extrae tallas de "7,10,11 24.99" — números antes del precio, separados por coma. */
@@ -951,7 +1001,8 @@ export function extraerPrecios(texto) {
     if (omitirExtraerPrecioLineaTipoSoloTallas(lineas, linea, yaHayPrecioClaro)) continue;
     // "7 hombre", "10.5 mujer": talla US + género, no "precio 7 + nombre hombre"
     if (lineaEsTallaGeneroCalzado(linea)) continue;
-    if (lineaEsDosTallasYyGeneroCalzado(linea)) continue;
+    if (lineaEsListaTallasCalzadoConGeneroFinal(linea)) continue;
+    if (lineaEsTallaCalzadoYMarciaSigla(linea)) continue;
     // Caso "Tengo 4 un a 19.99": cantidad + precio — extraer solo el precio
     const matchTengo = linea.match(/\btengo\s+\d+\s*(?:un\s*)?a\s+(\d+(?:[.,]\d{1,2})?)\s*$/i);
     if (matchTengo) {
@@ -1129,12 +1180,15 @@ export function extraerPrecios(texto) {
       omitirExtraerPrecioLineaTipoSoloTallas(lineasFallback, lineasFallback[0], false);
     const skipSoloListaPrefijoTallas =
       lineasFallback.length === 1 && lineaEsSoloListaTallas(lineasFallback[0]);
+    const skipTallaMarcaSigla =
+      lineasFallback.length === 1 && lineaEsTallaCalzadoYMarciaSigla(lineasFallback[0]);
     const skipFallback =
       soloListaTallaUnaLinea ||
       soloNinaNinoTallasUnaLinea ||
       soloTallaCalzadoUnaLinea ||
       skipSoloTallasOCaption ||
       skipSoloListaPrefijoTallas ||
+      skipTallaMarcaSigla ||
       /^stock\s+solo\s+\d+/i.test(textoTrim) ||
       /^solo\s+\d+\s*(?:unidades?|und|stock)?\s*$/i.test(textoTrim) ||
       /^quedan\s+\d+/i.test(textoTrim) ||
@@ -1431,8 +1485,13 @@ export function extraerTallas(texto) {
       for (const v of extraerTallasDePrefijoTallas(`tallas ${resto}`)) tallasNumeros.push(v);
       continue;
     }
-    if (lineaEsDosTallasYyGeneroCalzado(linea)) {
-      for (const et of etiquetasDosTallasYyGeneroCalzado(linea)) tallasTallaGenero.push(et);
+    if (lineaEsListaTallasCalzadoConGeneroFinal(linea)) {
+      for (const et of etiquetasListaTallasCalzadoConGeneroFinal(linea)) tallasTallaGenero.push(et);
+      continue;
+    }
+    if (lineaEsTallaCalzadoYMarciaSigla(linea)) {
+      const et = etiquetaTallaCalzadoMarciaSigla(linea);
+      if (et) tallasTallaGenero.push(et);
       continue;
     }
     if (lineaEsTallaGeneroCalzado(linea)) {
