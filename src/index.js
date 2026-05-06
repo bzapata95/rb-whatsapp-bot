@@ -207,7 +207,29 @@ function construirTextoDestino(cuerpo) {
   // No incluir como tallas números que son precios de productos (ej. "28" puede ser precio USD o talla pantalón)
   const preciosProductos = new Set(productos.map((p) => p.precio));
   tallas = tallas.filter((t) => typeof t !== 'number' || !preciosProductos.has(t));
-  if (!tienePrecio) return { textoDestino: cuerpo, productos: [], tallas, alertasStock, tienePrecio: false };
+  if (!tienePrecio) {
+    if (tallas.length > 0) {
+      const lineasSd = [`📏 Tallas disponibles: ${tallas.join(', ')}`];
+      if (alertasStock.length > 0) lineasSd.push(`⚠️ ${alertasStock.join(' | ')}`);
+      return {
+        textoDestino: lineasSd.join('\n'),
+        productos: [],
+        tallas,
+        alertasStock,
+        tienePrecio: false,
+      };
+    }
+    if (alertasStock.length > 0) {
+      return {
+        textoDestino: `${cuerpo.trim()}\n⚠️ ${alertasStock.join(' | ')}`,
+        productos: [],
+        tallas,
+        alertasStock,
+        tienePrecio: false,
+      };
+    }
+    return { textoDestino: cuerpo, productos: [], tallas, alertasStock, tienePrecio: false };
+  }
   const lineasSoles = [];
   for (const item of productos) {
     let precioSoles;
@@ -429,12 +451,19 @@ client.on('message', async (msg) => {
     if (tieneMedia && !tienePrecio) {
       const media = await msg.downloadMedia();
       if (media) {
-        const caption = (cuerpo && cuerpo.trim()) ? cuerpo.trim() : undefined;
+        const caption =
+          cuerpo && cuerpo.trim()
+            ? tallas.length > 0
+              ? textoDestino
+              : cuerpo.trim()
+            : undefined;
         const sent = await client.sendMessage(GRUPO_DESTINO, media, caption ? { caption } : undefined);
         const sentAt = new Date().toISOString();
         if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
         console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
-        console.log('Tipo: Imagen sola (sin precio)');
+        console.log(
+          tallas.length > 0 ? 'Tipo: Imagen sin precio (caption: tallas formateadas)' : 'Tipo: Imagen sola (sin precio)'
+        );
         if (caption) console.log('Caption:', caption);
         console.log('Media tipo:', media.mimetype);
         console.log('================================\n');
@@ -447,7 +476,7 @@ client.on('message', async (msg) => {
           productos: [],
           tallas,
           textoEnviado: caption ?? null,
-          tipoEnvio: 'imagen_sola',
+          tipoEnvio: tallas.length > 0 ? 'imagen_sola_tallas' : 'imagen_sola',
           mediaTipo: media.mimetype,
         });
       } else {
@@ -538,6 +567,30 @@ client.on('message', async (msg) => {
       });
     }
 
+    // 3b) Solo texto con tallas reconocidas (sin precio en ese mensaje; p. ej. tallas tras enviar foto con precio)
+    if (!tieneMedia && !tienePrecio && tallas.length > 0) {
+      const sent = await client.sendMessage(GRUPO_DESTINO, textoDestino);
+      const sentAt = new Date().toISOString();
+      if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
+      console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
+      console.log('Tipo: Solo tallas disponibles (sin precio en el mensaje)');
+      console.log('Texto enviado:');
+      console.log(textoDestino);
+      console.log('================================\n');
+      logMensajeProcesado({
+        receivedAt,
+        sentAt,
+        grupo: nombreGrupo,
+        tieneMedia,
+        textoOriginal: cuerpo,
+        productos: [],
+        tallas,
+        textoEnviado: textoDestino,
+        tipoEnvio: 'solo_texto_tallas',
+      });
+      return;
+    }
+
     // 4) Solo texto sin precio: NO enviar (anuncios, saludos, coordinación)
     // Solo pasan al grupo destino los mensajes de venta (con precio o con imagen+producto)
     if (!tieneMedia && !tienePrecio) {
@@ -550,7 +603,7 @@ client.on('message', async (msg) => {
         tieneMedia,
         textoOriginal: cuerpo,
         productos: [],
-        tallas: [],
+        tallas,
         tipoEnvio: null,
         razonNoEnvio: 'filtrado_solo_texto_sin_precio',
       });
