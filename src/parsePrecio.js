@@ -26,6 +26,7 @@
  * - Precio y una talla solo en segunda línea: "29.99" + "7.6" (no dos decimales tipo .99 ⇒ talla; no segundo precio)
  * - Pulgadas de laptop/tablet ("laptop 13\"", "12.5 pulgadas") ≠ talla calzado; "tallas 12 y 13" sí son tallas
  * - Foto/caption sólo disponibilidad: "5.5 y 6", "6.5 a 7.5" (sin precio) → tallas/rango, sin USD falsos ni fallback corrupto
+ * - Mensaje corto rebaja USD (una línea): "De 16 a 7!", "Bajaron de precio de 16 a 10!" → precio=hoy USD, precioRegular=antes; rebajaNarrativa en destino
  * 
  * IMPORTANTE: Si el precio tiene signo $ explícito ($28 o 28$), marca conSignoDolar=true
  * para aplicar solo conversión directa (sin fórmula de costos/márgenes).
@@ -971,6 +972,35 @@ function extraerTallasDePrefijoTallas(linea) {
   return out;
 }
 
+/** "De 16 a 7!" o al final "... de 16 a 10!" — rebate narrativo USD (una sola línea corta). */
+function matchRebajaNarrativaDeAUsdEnLinea(linea) {
+  const ln = linea.trim();
+  if (ln.length > 140) return null;
+  const m = ln.match(/\bde\s+(\d+(?:[.,]\d{1,2})?)\s+a\s+(\d+(?:[.,]\d{1,2})?)(\s*[!¡.]*)?\s*$/iu);
+  if (!m) return null;
+  const antes = aNumero(m[1]);
+  const ahora = aNumero(m[2]);
+  if (Number.isNaN(antes) || Number.isNaN(ahora) || !(antes > ahora)) return null;
+  if (antes < 5 || ahora < 4 || antes > 450 || ahora > 450) return null;
+  const ambInts = Number.isInteger(antes) && Number.isInteger(ahora);
+  if (ambInts && antes <= 15 && ahora <= 14) return null;
+  const pareceUsd =
+    antes >= 15 ||
+    ahora >= 10 ||
+    antes % 1 !== 0 ||
+    ahora % 1 !== 0 ||
+    /bajaron|rebaja|oferta|descuent|liquidaci|\bprecio\b/i.test(ln);
+  if (!pareceUsd) return null;
+  return { antes, ahora };
+}
+
+/** Mensaje de una línea equivalente solo a rebaja tipo "De X a Y" (captions cortos del grupo USA). */
+function mensajeCompletoEsSoloRebajaDeAUsd(textoNorm) {
+  const lineasMsg = textoNorm.split(RE_NEWLINE).map((s) => s.trim()).filter(Boolean);
+  if (lineasMsg.length !== 1) return null;
+  return matchRebajaNarrativaDeAUsdEnLinea(lineasMsg[0]);
+}
+
 /** Extrae valores "X cm" de una línea (ej. "25.5 cm" → ["25.5 cm"]). */
 function extraerTallasCmDeLinea(linea) {
   const out = [];
@@ -994,12 +1024,29 @@ function extraerTallasCmDeLinea(linea) {
  * - Separador " y ": "16 y 18", "5.5 y 7 (taper)"
  * - Múltiples productos en una línea: "Tomatodo 6 (plástico) mochila 18"
  * @param {string} texto - Cuerpo del mensaje
- * @returns {{ precio: number, enSoles: boolean, conSignoDolar: boolean, nombre?: string }[]}
+ * @returns {{ precio: number, enSoles: boolean, conSignoDolar: boolean, nombre?: string, precioRegular?: number, rebajaNarrativa?: boolean, rebajaPorcentaje?: number }[]}
  */
 export function extraerPrecios(texto) {
   if (!texto || typeof texto !== 'string') return [];
 
   const textoNorm = normalizarTexto(texto);
+  const soloRebaja = mensajeCompletoEsSoloRebajaDeAUsd(textoNorm);
+  if (soloRebaja) {
+    const { antes, ahora } = soloRebaja;
+    const rebajaPorcentaje = Math.round(((antes - ahora) / antes) * 100);
+    return [
+      {
+        precio: ahora,
+        precioRegular: antes,
+        enSoles: false,
+        conSignoDolar: false,
+        nombre: undefined,
+        rebajaNarrativa: true,
+        rebajaPorcentaje,
+      },
+    ];
+  }
+
   const lineas = textoNorm.split(RE_NEWLINE).map((s) => s.trim()).filter(Boolean);
   const resultados = [];
   let yaHayPrecioClaro = false;

@@ -282,7 +282,18 @@ function construirTextoDestino(cuerpo) {
     const esDesde = nombreValido && /^desde$/i.test(item.nombre.trim());
     const disclaimerDesde = esDesde ? ' (el precio puede variar por tamaño o modelo)' : '';
     if (precioRegularSoles != null) {
-      lineasSoles.push(`💰 ${prefixCantidad}Precio: S/ ${precioSoles} – Antes S/ ${precioRegularSoles}`);
+      if (item.rebajaNarrativa) {
+        lineasSoles.push('🔥 *¡Bajaron de precio!*');
+        lineasSoles.push(
+          `💸 Antes ~S/ ${precioRegularSoles}~ → *¡Ahora S/ ${precioSoles}!*`
+        );
+        const pct = item.rebajaPorcentaje;
+        if (typeof pct === 'number' && pct >= 5 && pct <= 92) {
+          lineasSoles.push(`📉 *${pct}% menos* que antes`);
+        }
+      } else {
+        lineasSoles.push(`💰 ${prefixCantidad}Precio: S/ ${precioSoles} – Antes S/ ${precioRegularSoles}`);
+      }
     } else {
       const parteNombre = nombreValido ? `${item.nombre} – ` : '';
       lineasSoles.push(`💰 ${prefixCantidad}${parteNombre}Precio: S/ ${precioSoles}${disclaimerDesde}`);
