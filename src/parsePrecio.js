@@ -17,6 +17,7 @@
  * - Tallas primero, precio al final: "7,10,11 24.99" (7,10,11=tallas, 24.99=precio)
  * - Ropa infantil rangos años/talla: segunda línea "8-10", "8-10, 12-14" o "2-3, 4-5, …, 16" (tramo suelto; se muestra la línea tal cual)
  * - Precio y debajo talla US + género: "12.99" luego "7 hombre" → una sola oferta, talla mostrada "7 (Hombre)"
+ * - Precio + línea "9.5 y 10 hombre" → un precio; tallas "9.5 (Hombre)" y "10 (Hombre)", no USD 9.5 ni 10 con nombre hombre
  * - Una línea: precio + "hay" + tallas pantalón o calzado: "33.7 hay 39 y 40"
  * - Sólo lista con prefijo "Tallas"/"Talla": "Tallas 38,41,36 y 37"
  * - Precio y línea niña/niño + tallas calzado bebé: "9.99" + "Niña 1, 2 y 3" (1–15 US; incluye talla 1)
@@ -679,6 +680,17 @@ function lineaEsRangoTallaEdad(linea) {
   return hayRangoNiño;
 }
 
+/** Número en formato talla US + género (.5 ok; .99 = precio → no). null si no es talla válida. */
+function valorNumeroTallaCalzadoParaGenero(raw) {
+  const v = aNumero(String(raw));
+  if (Number.isNaN(v) || v < TALLA_MIN || v > TALLA_MAX) return null;
+  const strN = String(raw).replace(',', '.');
+  if (/^\d+\.\d{2}$/.test(strN)) return null;
+  const esMedio = Math.abs((v % 1) - 0.5) < 0.01;
+  if (!Number.isInteger(v) && !esMedio) return null;
+  return v;
+}
+
 /**
  * Talla de calzado + género en una sola línea: "7 hombre", "10.5 mujer", "8 niño".
  * Suele ir debajo del precio; no debe leerse como precio USD + nombre del producto.
@@ -687,14 +699,31 @@ function lineaEsTallaGeneroCalzado(linea) {
   const l = linea.trim();
   const m = l.match(/^(\d+(?:[.,]\d+)?)\s+(hombre|mujer|ni[ñn]o)\s*$/iu);
   if (!m) return false;
-  const raw = m[1];
-  const v = aNumero(raw);
-  if (Number.isNaN(v) || v < TALLA_MIN || v > TALLA_MAX) return false;
-  const strN = String(raw).replace(',', '.');
-  if (/\.\d{2}$/.test(strN)) return false;
-  const esMedio = Math.abs((v % 1) - 0.5) < 0.01;
-  if (!Number.isInteger(v) && !esMedio) return false;
-  return true;
+  return valorNumeroTallaCalzadoParaGenero(m[1]) != null;
+}
+
+const RE_DOS_TALLAS_Y_GENERO =
+  /^(\d+(?:[.,]\d+)?)\s+y\s+(\d+(?:[.,]\d+)?)\s+(hombre|mujer|ni[ñn]o)\s*$/iu;
+
+/** Ej. "9.5 y 10 hombre": dos tallas disponibles con el mismo género. */
+function lineaEsDosTallasYyGeneroCalzado(linea) {
+  const m = linea.trim().match(RE_DOS_TALLAS_Y_GENERO);
+  if (!m) return false;
+  return (
+    valorNumeroTallaCalzadoParaGenero(m[1]) != null &&
+    valorNumeroTallaCalzadoParaGenero(m[2]) != null
+  );
+}
+
+function etiquetasDosTallasYyGeneroCalzado(linea) {
+  const m = linea.trim().match(RE_DOS_TALLAS_Y_GENERO);
+  if (!m) return [];
+  const v1 = valorNumeroTallaCalzadoParaGenero(m[1]);
+  const v2 = valorNumeroTallaCalzadoParaGenero(m[2]);
+  if (v1 == null || v2 == null) return [];
+  const g = m[3].toLowerCase();
+  const nombre = g === 'mujer' ? 'Mujer' : g === 'hombre' ? 'Hombre' : 'Niño';
+  return [`${v1} (${nombre})`, `${v2} (${nombre})`];
 }
 
 /** Etiqueta de género para salida (ej. "7 (Hombre)"). */
@@ -922,6 +951,7 @@ export function extraerPrecios(texto) {
     if (omitirExtraerPrecioLineaTipoSoloTallas(lineas, linea, yaHayPrecioClaro)) continue;
     // "7 hombre", "10.5 mujer": talla US + género, no "precio 7 + nombre hombre"
     if (lineaEsTallaGeneroCalzado(linea)) continue;
+    if (lineaEsDosTallasYyGeneroCalzado(linea)) continue;
     // Caso "Tengo 4 un a 19.99": cantidad + precio — extraer solo el precio
     const matchTengo = linea.match(/\btengo\s+\d+\s*(?:un\s*)?a\s+(\d+(?:[.,]\d{1,2})?)\s*$/i);
     if (matchTengo) {
@@ -1399,6 +1429,10 @@ export function extraerTallas(texto) {
         .replace(/^tallas?\s+/i, '')
         .trim();
       for (const v of extraerTallasDePrefijoTallas(`tallas ${resto}`)) tallasNumeros.push(v);
+      continue;
+    }
+    if (lineaEsDosTallasYyGeneroCalzado(linea)) {
+      for (const et of etiquetasDosTallasYyGeneroCalzado(linea)) tallasTallaGenero.push(et);
       continue;
     }
     if (lineaEsTallaGeneroCalzado(linea)) {
