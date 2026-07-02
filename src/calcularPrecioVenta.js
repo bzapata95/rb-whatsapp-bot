@@ -13,7 +13,7 @@
 /**
  * @param {number} precioUnitarioUSD - Precio del producto en USD
  * @param {object} opts - Configuración (porcentajes y tipo de cambio)
- * @returns {{ totalSoles: number, totalUSD: number, desglose: string }}
+ * @returns {{ totalSoles: number, totalUSD: number, costoBaseSoles: number, desglose: string }}
  */
 export function calcularPrecioVenta(precioUnitarioUSD, opts = {}) {
   const {
@@ -40,6 +40,8 @@ export function calcularPrecioVenta(precioUnitarioUSD, opts = {}) {
 
   // 5. Convertir a Soles y redondear hacia arriba (sin decimales)
   const totalSoles = Math.ceil(totalUSD * tipoCambioSoles);
+  // Solo producto + impuesto + shopper (sin ganancia ni envío), en soles
+  const costoBaseSoles = Math.ceil(conShopper * tipoCambioSoles);
 
   const desglose =
     `Precio USD: $${redondear(precioUnitarioUSD)} → +${porcentajeImpuesto}% → +${porcentajeShopper}% shopper → +${porcentajeGanancia}% ganancia → +$${envioUSD} envío = $${redondear(totalUSD)} → S/ ${totalSoles}`;
@@ -47,6 +49,7 @@ export function calcularPrecioVenta(precioUnitarioUSD, opts = {}) {
   return {
     totalSoles,
     totalUSD: redondear(totalUSD, 2),
+    costoBaseSoles,
     desglose,
   };
 }

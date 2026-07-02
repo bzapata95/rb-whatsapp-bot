@@ -16,6 +16,14 @@ const GRUPO_RASTREO = config.GRUPO_RASTREO_ID || '';
 const TIPO_CAMBIO = config.TIPO_CAMBIO_SOLES;
 const MONEDA_ORIGEN = config.MONEDA_ORIGEN;
 
+const OPTS_PRECIO = () => ({
+  porcentajeImpuesto: config.PORCENTAJE_IMPUESTO,
+  porcentajeShopper: config.PORCENTAJE_SHOPPER,
+  porcentajeGanancia: config.PORCENTAJE_GANANCIA,
+  envioUSD: config.ENVIO_USD,
+  tipoCambioSoles: TIPO_CAMBIO,
+});
+
 const faltaConfigurarGrupos = !GRUPO_ORIGEN || !GRUPO_DESTINO;
 
 /** Mapa id mensaje origen → id mensaje destino: para borrar en destino cuando eliminen en origen. */
@@ -144,8 +152,46 @@ function guardarMapeoOrigenDestino(idOrigen, idDestino) {
   }
 }
 
+/** Líneas con precios convertidos para el grupo de rastreo (TC, base sin envío, precio venta completo). */
+function formatearConversionRastreo(productos) {
+  if (!productos?.length) return [];
+
+  const lineas = [
+    '',
+    '--- Conversión aplicada ---',
+    `💱 Tipo de cambio: S/ ${TIPO_CAMBIO} / USD`,
+  ];
+
+  for (const item of productos) {
+    const nombreValido = item.nombre && esNombreProductoValido(item.nombre);
+    const etiqueta = nombreValido ? item.nombre : 'Producto';
+    const prefixCantidad = item.cantidad && item.cantidad > 1 ? `${item.cantidad} x ` : '';
+
+    if (item.enSoles) {
+      lineas.push('');
+      lineas.push(`${prefixCantidad}${etiqueta}: S/ ${Math.ceil(item.precio)} (precio ya en soles, sin conversión)`);
+      continue;
+    }
+
+    const { costoBaseSoles, totalSoles } = calcularPrecioVenta(item.precio, OPTS_PRECIO());
+    lineas.push('');
+    lineas.push(`${prefixCantidad}${etiqueta}: $${item.precio} USD`);
+    lineas.push(`  📦 Base (prod. + imp. + shopper): S/ ${costoBaseSoles}`);
+    lineas.push(`  💰 Precio venta (+ ganancia + envío): S/ ${totalSoles}`);
+
+    if (item.precioRegular) {
+      const reg = calcularPrecioVenta(item.precioRegular, OPTS_PRECIO());
+      lineas.push(
+        `  📉 Antes ($${item.precioRegular}): base S/ ${reg.costoBaseSoles} → venta S/ ${reg.totalSoles}`
+      );
+    }
+  }
+
+  return lineas;
+}
+
 /** Envía al grupo de rastreo el mensaje ORIGINAL con cabecera de metadatos para análisis de precios. */
-async function enviarMensajeRastreo(msg, chat, cuerpo) {
+async function enviarMensajeRastreo(msg, chat, cuerpo, productos = []) {
   if (!GRUPO_RASTREO) return;
   try {
     const idChat = chat.id._serialized;
@@ -178,6 +224,7 @@ async function enviarMensajeRastreo(msg, chat, cuerpo) {
       '',
       '--- Texto original ---',
       cuerpo || '(sin texto)',
+      ...formatearConversionRastreo(productos),
     ].filter(Boolean);
 
     const cabeceraYTexto = lineas.join('\n');
@@ -456,7 +503,7 @@ client.on('message', async (msg) => {
   const idOrigen = msg.id._serialized;
 
   try {
-    await enviarMensajeRastreo(msg, chat, cuerpo);
+    await enviarMensajeRastreo(msg, chat, cuerpo, productos);
 
     // 1) Solo foto (sin precio): enviar imagen con el texto original como caption si hay
     if (tieneMedia && !tienePrecio) {
