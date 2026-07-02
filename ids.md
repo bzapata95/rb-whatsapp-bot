@@ -91,3 +91,24 @@ pm2 env rb-whatsapp | grep -i chrome
 ```
 
 > **Opcional:** puedes dejar Chromium Snap instalado, pero ya no debería usarse si fuerzas `CHROME_PATH`.
+
+## Limpiar whtsapp corrupto cuando se queda colga
+
+cd ~/app/rb-whatsapp-bot
+
+# 1. Parar todo limpio
+pm2 stop rb-whatsapp
+
+# 2. Matar Chrome zombie del perfil wwebjs
+pkill -f "user-data-dir.*\.wwebjs_auth" || true
+sleep 3
+
+# 3. Quitar locks
+rm -f .wwebjs_auth/session/SingletonLock
+rm -f .wwebjs_auth/session-*/SingletonLock 2>/dev/null
+
+# 4. Arrancar de nuevo
+pm2 start ecosystem.config.cjs --only rb-whatsapp --update-env
+
+# 5. Ver logs en vivo
+pm2 logs rb-whatsapp --lines 50
