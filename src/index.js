@@ -384,16 +384,35 @@ function construirTextoDestino(cuerpo) {
   return { textoDestino: lineasSoles.join('\n'), productos, tallas, alertasStock, tienePrecio: true };
 }
 
+/** Reintenta una operación async si wwebjs devuelve error transitorio ("r", etc.). */
+async function conReintentoWwebjs(fn, { intentos = 2, delayMs = 800 } = {}) {
+  let ultimoError;
+  for (let intento = 1; intento <= intentos; intento++) {
+    try {
+      return await fn();
+    } catch (err) {
+      ultimoError = err;
+      if (intento < intentos) await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw ultimoError;
+}
+
 // Cuando agregan usuario(s) al grupo destino: enviar mensaje de bienvenida con pasos para comprar
 client.on('group_join', async (notification) => {
   if (faltaConfigurarGrupos) return;
+  // notification.chatId evita getChat() (falla con "r" en wwebjs 1.34.x)
+  if (notification.chatId !== GRUPO_DESTINO) return;
   try {
-    const chat = await notification.getChat();
-    if (!chat.isGroup || chat.id._serialized !== GRUPO_DESTINO) return;
     const mensaje = config.MENSAJE_BIENVENIDA;
-    await notification.reply(mensaje);
-    const recipients = await notification.getRecipients();
-    const nombres = recipients.map((c) => c.pushname || c.name || c.number).filter(Boolean);
+    await conReintentoWwebjs(() => client.sendMessage(GRUPO_DESTINO, mensaje));
+    let nombres = [];
+    try {
+      const recipients = await notification.getRecipients();
+      nombres = recipients.map((c) => c.pushname || c.name || c.number).filter(Boolean);
+    } catch (_) {
+      nombres = (notification.recipientIds || []).map((id) => String(id).split('@')[0]).filter(Boolean);
+    }
     console.log('\n>>> BIENVENIDA ENVIADA (grupo destino) <<<');
     console.log('Usuarios agregados:', nombres.length ? nombres.join(', ') : notification.recipientIds?.length || '?');
     console.log('================================\n');
