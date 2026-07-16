@@ -157,6 +157,28 @@ function guardarMapeoOrigenDestino(idOrigen, idDestino) {
   }
 }
 
+/** Envía media+caption; si wwebjs falla (error "r"), reintenta una vez y luego solo texto. */
+async function enviarConMediaOTexto(destinoId, media, { caption, textoFallback } = {}) {
+  const texto = textoFallback ?? caption ?? '';
+  if (media) {
+    for (let intento = 1; intento <= 2; intento++) {
+      try {
+        const sent = await client.sendMessage(destinoId, media, caption ? { caption } : undefined);
+        return { sent, soloTexto: false };
+      } catch (err) {
+        if (intento < 2) {
+          await new Promise((r) => setTimeout(r, 800));
+          continue;
+        }
+        console.warn('Falló envío con media, enviando solo texto:', err.message);
+      }
+    }
+  }
+  if (!texto) throw new Error('Sin contenido para enviar');
+  const sent = await client.sendMessage(destinoId, texto);
+  return { sent, soloTexto: Boolean(media) };
+}
+
 /** Líneas con precios convertidos para el grupo de rastreo (TC, base sin envío, precio venta completo). */
 function formatearConversionRastreo(productos) {
   if (!productos?.length) return [];
@@ -196,11 +218,11 @@ function formatearConversionRastreo(productos) {
 }
 
 /** Envía al grupo de rastreo el mensaje ORIGINAL con cabecera de metadatos para análisis de precios. */
-async function enviarMensajeRastreo(msg, chat, cuerpo, productos = []) {
+async function enviarMensajeRastreo(msg, chatCtx, cuerpo, productos = [], mediaPrecargada = null) {
   if (!GRUPO_RASTREO) return;
   try {
-    const idChat = chat.id._serialized;
-    const nombreGrupo = chat.name;
+    const idChat = chatCtx.id._serialized;
+    const nombreGrupo = chatCtx.name;
     const idMsg = msg.id._serialized;
     const ts = msg.timestamp ? msg.timestamp * 1000 : Date.now();
     const fecha = new Date(ts).toLocaleString('es-PE', {
@@ -236,7 +258,7 @@ async function enviarMensajeRastreo(msg, chat, cuerpo, productos = []) {
 
     if (msg.hasMedia) {
       try {
-        const media = await msg.downloadMedia();
+        const media = mediaPrecargada ?? (await msg.downloadMedia());
         if (media) {
           await client.sendMessage(GRUPO_RASTREO, media, { caption: cabeceraYTexto });
         } else {
@@ -531,29 +553,45 @@ client.on('message', async (msg) => {
   }
 
   const idOrigen = msg.id._serialized;
+  let media = null;
+  if (tieneMedia) {
+    try {
+      media = await msg.downloadMedia();
+    } catch (err) {
+      console.warn('No se pudo descargar la imagen:', err.message);
+    }
+  }
 
   try {
-    await enviarMensajeRastreo(msg, chatCtx, cuerpo, productos);
+    await enviarMensajeRastreo(msg, chatCtx, cuerpo, productos, media);
 
     // 1) Solo foto (sin precio): enviar imagen con el texto original como caption si hay
     if (tieneMedia && !tienePrecio) {
-      const media = await msg.downloadMedia();
-      if (media) {
+      if (media || (cuerpo && cuerpo.trim()) || tallas.length > 0) {
         const caption =
           cuerpo && cuerpo.trim()
             ? tallas.length > 0
               ? textoDestino
               : cuerpo.trim()
-            : undefined;
-        const sent = await client.sendMessage(GRUPO_DESTINO, media, caption ? { caption } : undefined);
+            : tallas.length > 0
+              ? textoDestino
+              : undefined;
+        const { sent, soloTexto } = await enviarConMediaOTexto(GRUPO_DESTINO, media, {
+          caption,
+          textoFallback: caption || cuerpo.trim() || undefined,
+        });
         const sentAt = new Date().toISOString();
         if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
         console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
         console.log(
-          tallas.length > 0 ? 'Tipo: Imagen sin precio (caption: tallas formateadas)' : 'Tipo: Imagen sola (sin precio)'
+          soloTexto
+            ? 'Tipo: Solo texto (falló envío de imagen)'
+            : tallas.length > 0
+              ? 'Tipo: Imagen sin precio (caption: tallas formateadas)'
+              : 'Tipo: Imagen sola (sin precio)'
         );
         if (caption) console.log('Caption:', caption);
-        console.log('Media tipo:', media.mimetype);
+        if (media && !soloTexto) console.log('Media tipo:', media.mimetype);
         console.log('================================\n');
         logMensajeProcesado({
           receivedAt,
@@ -564,8 +602,9 @@ client.on('message', async (msg) => {
           productos: [],
           tallas,
           textoEnviado: caption ?? null,
-          tipoEnvio: tallas.length > 0 ? 'imagen_sola_tallas' : 'imagen_sola',
-          mediaTipo: media.mimetype,
+          tipoEnvio: soloTexto ? 'solo_texto' : tallas.length > 0 ? 'imagen_sola_tallas' : 'imagen_sola',
+          mediaTipo: media && !soloTexto ? media.mimetype : null,
+          error: soloTexto && media ? 'Falló envío de imagen' : undefined,
         });
       } else {
         console.warn('No se pudo descargar la imagen');
@@ -585,50 +624,31 @@ client.on('message', async (msg) => {
 
     // 2) Foto + texto con precio (mismo mensaje): enviar imagen con caption en soles
     if (tieneMedia && tienePrecio) {
-      const media = await msg.downloadMedia();
       const sentAt = new Date().toISOString();
-      if (media) {
-        const sent = await client.sendMessage(GRUPO_DESTINO, media, { caption: textoDestino });
-        if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
-        console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
-        console.log('Tipo: Imagen + precios convertidos');
-        console.log('Media tipo:', media.mimetype);
-        console.log('Caption enviado (cada línea):');
-        textoDestino.split(/\r?\n|\r/).forEach((l, i) => console.log(`  ${i + 1}. ${l}`));
-        console.log('================================\n');
-        logMensajeProcesado({
-          receivedAt,
-          sentAt,
-          grupo: nombreGrupo,
-          tieneMedia,
-          textoOriginal: cuerpo,
-          productos: productos.map((p) => ({ precio: p.precio, enSoles: p.enSoles, nombre: p.nombre })),
-          tallas,
-          textoEnviado: textoDestino,
-          tipoEnvio: 'imagen_con_precios',
-          mediaTipo: media.mimetype,
-        });
-      } else {
-        const sent = await client.sendMessage(GRUPO_DESTINO, textoDestino);
-        if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
-        console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
-        console.log('Tipo: Solo texto (falló descarga de imagen)');
-        console.log('Texto enviado:');
-        console.log(textoDestino);
-        console.log('================================\n');
-        logMensajeProcesado({
-          receivedAt,
-          sentAt,
-          grupo: nombreGrupo,
-          tieneMedia,
-          textoOriginal: cuerpo,
-          productos: productos.map((p) => ({ precio: p.precio, enSoles: p.enSoles, nombre: p.nombre })),
-          tallas,
-          textoEnviado: textoDestino,
-          tipoEnvio: 'solo_texto',
-          error: 'Falló descarga de imagen',
-        });
-      }
+      const { sent, soloTexto } = await enviarConMediaOTexto(GRUPO_DESTINO, media, {
+        caption: textoDestino,
+        textoFallback: textoDestino,
+      });
+      if (sent) guardarMapeoOrigenDestino(idOrigen, sent.id._serialized);
+      console.log('\n>>> ENVIADO AL GRUPO DESTINO <<<');
+      console.log(soloTexto ? 'Tipo: Solo texto (falló envío de imagen)' : 'Tipo: Imagen + precios convertidos');
+      if (media && !soloTexto) console.log('Media tipo:', media.mimetype);
+      console.log('Caption enviado (cada línea):');
+      textoDestino.split(/\r?\n|\r/).forEach((l, i) => console.log(`  ${i + 1}. ${l}`));
+      console.log('================================\n');
+      logMensajeProcesado({
+        receivedAt,
+        sentAt,
+        grupo: nombreGrupo,
+        tieneMedia,
+        textoOriginal: cuerpo,
+        productos: productos.map((p) => ({ precio: p.precio, enSoles: p.enSoles, nombre: p.nombre })),
+        tallas,
+        textoEnviado: textoDestino,
+        tipoEnvio: soloTexto ? 'solo_texto' : 'imagen_con_precios',
+        mediaTipo: media && !soloTexto ? media.mimetype : null,
+        error: soloTexto && media ? 'Falló envío de imagen' : undefined,
+      });
       return;
     }
 
