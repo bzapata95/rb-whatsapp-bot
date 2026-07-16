@@ -16,6 +16,7 @@ const GRUPO_DESTINO = config.GRUPO_DESTINO_ID;
 const GRUPO_RASTREO = config.GRUPO_RASTREO_ID || '';
 const TIPO_CAMBIO = config.TIPO_CAMBIO_SOLES;
 const MONEDA_ORIGEN = config.MONEDA_ORIGEN;
+const MODO_PRUEBA = config.MODO_PRUEBA;
 
 const OPTS_PRECIO = () => ({
   porcentajeImpuesto: config.PORCENTAJE_IMPUESTO,
@@ -133,16 +134,39 @@ client.on('authenticated', () => {
   console.log('Sesión detectada, cargando WhatsApp...');
 });
 
+/** true mientras WhatsApp Web se está (re)cargando: en ese estado downloadMedia/evaluate fallan con "r". */
+let paginaCargando = false;
+
 client.on('loading_screen', (percent, message) => {
+  paginaCargando = Number(percent) < 99;
   console.log('Cargando:', percent, message || '');
 });
 
+/** Espera a que WhatsApp Web termine su recarga antes de operar sobre la página. */
+async function esperarPaginaEstable(maxMs = 90000) {
+  if (!paginaCargando) return;
+  console.log('[Media] WhatsApp Web recargando; esperando a que termine...');
+  const inicio = Date.now();
+  while (paginaCargando && Date.now() - inicio < maxMs) {
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  // Margen extra tras llegar a 99/100: la inyección de wwebjs tarda unos segundos más
+  await new Promise((r) => setTimeout(r, 3000));
+}
+
 client.on('ready', async () => {
+  paginaCargando = false;
   if (faltaConfigurarGrupos) {
     console.log('Bot listo. Falta configurar GRUPO_ORIGEN_ID y GRUPO_DESTINO_ID en .env');
     console.log('Cuando alguien envíe un mensaje en un grupo, aquí se mostrará el ID del grupo para que lo copies.\n');
   } else {
     console.log('Bot listo. Escuchando grupo origen:', GRUPO_ORIGEN);
+    if (MODO_PRUEBA) {
+      console.log('🧪 MODO PRUEBA ACTIVO: también se procesan TUS propios mensajes en el grupo origen.');
+      if (GRUPO_ORIGEN === GRUPO_DESTINO) {
+        console.warn('⚠️ GRUPO_ORIGEN y GRUPO_DESTINO son el mismo: riesgo de bucle. Usa grupos distintos para probar.');
+      }
+    }
     try {
       const chat = await client.getChatById(GRUPO_ORIGEN);
       nombreGrupoOrigenCache = chat.name || '';
@@ -158,11 +182,20 @@ function guardarMapeoOrigenDestino(idOrigen, idDestino) {
   }
 }
 
+/** Promise con límite de tiempo: evita handlers colgados si la página quedó a medio cargar. */
+function conTimeout(promesa, ms, etiqueta = 'operación') {
+  return Promise.race([
+    promesa,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`timeout ${etiqueta} (${ms / 1000}s)`)), ms)),
+  ]);
+}
+
 /** Envía media+caption con reintentos; lanza si no se pudo (NO cae a solo texto: un precio sin foto confunde clientes). */
 async function enviarMediaConReintento(destinoId, media, caption, intentos = 3) {
   let ultimoError;
   for (let intento = 1; intento <= intentos; intento++) {
     try {
+      await esperarPaginaEstable();
       return await client.sendMessage(destinoId, media, caption ? { caption } : undefined);
     } catch (err) {
       ultimoError = err;
@@ -173,12 +206,13 @@ async function enviarMediaConReintento(destinoId, media, caption, intentos = 3) 
 }
 
 /** Descarga la media: nativo + fallback en RAM (WAWebDownloadManager); reintenta con reload entre intentos.
- * Delays largos: el error "r" suele coincidir con recargas de WhatsApp Web (Cargando: XX) y hay que esperarlas. */
+ * Espera si WhatsApp Web se está recargando: en ese estado todo evaluate falla con "r". */
 async function descargarMediaConReintento(msg, intentos = 3) {
   const delays = [3000, 8000];
   for (let intento = 1; intento <= intentos; intento++) {
     try {
-      const media = await downloadMediaInMemory(client, msg);
+      await esperarPaginaEstable();
+      const media = await conTimeout(downloadMediaInMemory(client, msg), 60000, 'descarga media');
       if (media?.data) return media;
     } catch (err) {
       console.warn(`[Media] Intento ${intento}/${intentos} falló:`, err.message);
@@ -444,6 +478,16 @@ function idDesdeMensaje(msg) {
   return msg?.from || msg?.id?.remote || msg?._data?.from || '';
 }
 
+/** ID del chat (conversación) robusto para mensajes propios (fromMe) y ajenos.
+ * En fromMe, msg.from es tu cuenta, no el grupo; id.remote y msg.to sí apuntan al chat. */
+function idChatDeMensaje(msg) {
+  const remote = msg?.id?.remote;
+  const remoteId = typeof remote === 'object' ? remote?._serialized : remote;
+  if (remoteId) return remoteId;
+  if (msg?.fromMe) return msg?.to || msg?._data?.to || '';
+  return msg?.from || msg?._data?.from || '';
+}
+
 function esGrupoWhatsApp(id) {
   return typeof id === 'string' && id.endsWith('@g.us');
 }
@@ -492,8 +536,18 @@ client.on('message_edit', async (message, newBody, prevBody) => {
   }
 });
 
-client.on('message', async (msg) => {
-  const idFrom = idDesdeMensaje(msg);
+// Mensajes de OTROS en el grupo origen (flujo normal de producción)
+client.on('message', (msg) => procesarMensaje(msg));
+
+// MODO PRUEBA: además procesa TUS propios mensajes (fromMe). El evento 'message' no los incluye.
+client.on('message_create', (msg) => {
+  if (!MODO_PRUEBA) return;
+  if (!msg?.fromMe) return; // los ajenos ya los maneja 'message'; evita doble proceso
+  procesarMensaje(msg);
+});
+
+async function procesarMensaje(msg) {
+  const idFrom = idChatDeMensaje(msg);
 
   if (!faltaConfigurarGrupos) {
     if (idFrom !== GRUPO_ORIGEN) return;
@@ -749,7 +803,7 @@ client.on('message', async (msg) => {
       razonNoEnvio: 'error_al_reenviar',
     });
   }
-});
+}
 
 // Reintentos al iniciar (en servidor la página puede navegar y destruir el context)
 const MAX_INIT_RETRIES = 5;

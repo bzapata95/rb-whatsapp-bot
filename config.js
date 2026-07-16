@@ -31,6 +31,11 @@ export const config = {
   // Útil para detectar patrones de precios y mejorar el parseo. Vacío = desactivado.
   GRUPO_RASTREO_ID: process.env.GRUPO_RASTREO_ID || '',
 
+  // MODO PRUEBA: además de los mensajes de otros, procesa TUS PROPIOS mensajes (fromMe) en el grupo
+  // origen. Sirve para probar el bot posteando tú mismo en un grupo de pruebas.
+  // ⚠️ NO activar en producción: si posteas en el origen real, se reenvía al destino real.
+  MODO_PRUEBA: /^(1|true|si|sí|yes|on)$/i.test(String(process.env.MODO_PRUEBA || '').trim()),
+
   // Mensaje de bienvenida cuando agregan usuarios al grupo destino (en .env usa \n para saltos de línea)
   MENSAJE_BIENVENIDA: process.env.MENSAJE_BIENVENIDA
     ? String(process.env.MENSAJE_BIENVENIDA).replace(/\\n/g, '\n')
