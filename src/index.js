@@ -172,19 +172,22 @@ async function enviarMediaConReintento(destinoId, media, caption, intentos = 3) 
   throw ultimoError;
 }
 
-/** Descarga la media: nativo + fallback en RAM (WAWebDownloadManager); reintenta con reload entre intentos. */
-async function descargarMediaConReintento(msg, intentos = 2) {
+/** Descarga la media: nativo + fallback en RAM (WAWebDownloadManager); reintenta con reload entre intentos.
+ * Delays largos: el error "r" suele coincidir con recargas de WhatsApp Web (Cargando: XX) y hay que esperarlas. */
+async function descargarMediaConReintento(msg, intentos = 3) {
+  const delays = [3000, 8000];
   for (let intento = 1; intento <= intentos; intento++) {
     try {
       const media = await downloadMediaInMemory(client, msg);
       if (media?.data) return media;
     } catch (err) {
+      console.warn(`[Media] Intento ${intento}/${intentos} falló:`, err.message);
       if (intento === intentos) {
-        console.warn('No se pudo descargar la imagen:', err.message);
+        console.warn('No se pudo descargar la imagen tras todos los intentos');
         return null;
       }
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, delays[intento - 1] ?? 8000));
     try {
       await msg.reload();
     } catch (_) {}
