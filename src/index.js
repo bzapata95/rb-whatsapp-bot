@@ -25,6 +25,7 @@ const OPTS_PRECIO = () => ({
 });
 
 const faltaConfigurarGrupos = !GRUPO_ORIGEN || !GRUPO_DESTINO;
+let nombreGrupoOrigenCache = '';
 
 /** Mapa id mensaje origen → id mensaje destino: para borrar en destino cuando eliminen en origen. */
 const MAPA_ORIGEN_DESTINO = new Map();
@@ -135,12 +136,16 @@ client.on('loading_screen', (percent, message) => {
   console.log('Cargando:', percent, message || '');
 });
 
-client.on('ready', () => {
+client.on('ready', async () => {
   if (faltaConfigurarGrupos) {
     console.log('Bot listo. Falta configurar GRUPO_ORIGEN_ID y GRUPO_DESTINO_ID en .env');
     console.log('Cuando alguien envíe un mensaje en un grupo, aquí se mostrará el ID del grupo para que lo copies.\n');
   } else {
     console.log('Bot listo. Escuchando grupo origen:', GRUPO_ORIGEN);
+    try {
+      const chat = await client.getChatById(GRUPO_ORIGEN);
+      nombreGrupoOrigenCache = chat.name || '';
+    } catch (_) {}
   }
 });
 
@@ -433,37 +438,36 @@ client.on('message_edit', async (message, newBody, prevBody) => {
 client.on('message', async (msg) => {
   const idFrom = idDesdeMensaje(msg);
 
-  // Con grupos configurados: solo el origen; evita getChat en canales/newsletters (error "r")
   if (!faltaConfigurarGrupos) {
     if (idFrom !== GRUPO_ORIGEN) return;
   } else if (!esGrupoWhatsApp(idFrom)) {
-    // Modo setup: ignorar privados y canales sin loguear
     return;
   }
 
-  let chat;
-  try {
-    chat = await msg.getChat();
-  } catch (err) {
-    // Solo loguear si era el grupo origen (caso raro); el resto ya se filtró arriba
-    if (!faltaConfigurarGrupos && idFrom === GRUPO_ORIGEN) {
-      console.warn('No se pudo obtener el chat del grupo origen:', err.message);
+  let idChat;
+  let nombreGrupo;
+  let chatCtx;
+
+  if (!faltaConfigurarGrupos) {
+    // msg.from ya confirma el grupo origen; getChat() falla con "r" en wwebjs 1.34.x
+    idChat = idFrom;
+    nombreGrupo = nombreGrupoOrigenCache || msg._data?.notifyName || idChat;
+    chatCtx = { id: { _serialized: idChat }, name: nombreGrupo };
+  } else {
+    let chat;
+    try {
+      chat = await msg.getChat();
+    } catch (_) {
+      return;
     }
-    return;
-  }
-  if (!chat.isGroup) return;
-
-  const idChat = chat.id._serialized;
-  const nombreGrupo = chat.name;
-
-  // Si aún no configuraste grupos, solo mostramos el ID para que lo copies
-  if (faltaConfigurarGrupos) {
+    if (!chat.isGroup) return;
+    idChat = chat.id._serialized;
+    nombreGrupo = chat.name;
+    chatCtx = chat;
     console.log(`[Grupo] "${nombreGrupo}" → ID: ${idChat}`);
     console.log('   Copia ese ID a .env como GRUPO_ORIGEN_ID o GRUPO_DESTINO_ID y reinicia el bot.\n');
     return;
   }
-
-  if (idChat !== GRUPO_ORIGEN) return;
 
   const receivedAt = new Date().toISOString();
   const tieneMedia = msg.hasMedia;
@@ -529,7 +533,7 @@ client.on('message', async (msg) => {
   const idOrigen = msg.id._serialized;
 
   try {
-    await enviarMensajeRastreo(msg, chat, cuerpo, productos);
+    await enviarMensajeRastreo(msg, chatCtx, cuerpo, productos);
 
     // 1) Solo foto (sin precio): enviar imagen con el texto original como caption si hay
     if (tieneMedia && !tienePrecio) {
