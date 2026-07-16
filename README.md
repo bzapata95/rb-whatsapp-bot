@@ -516,7 +516,9 @@ sudo apt-get install -y libnss3 libatk1.0-0 libx11-xcb1 libxcomposite1 libxdamag
 - **Timeouts**: 90 segundos para autenticación (servidores lentos)
 - **Reintentos**: Hasta 5 intentos con delay de 8s si falla la inicialización
 - **Media**: Si falla la descarga de imagen, envía solo el texto
-- **Chats no soportados**: Ignora canales y estructuras nuevas de WhatsApp
+- **Chats no soportados**: Ignora canales/newsletters sin llamar `getChat` (evita el error `r` de wwebjs 1.34.x)
+- **Rastreo**: Si falla subir la foto al grupo de rastreo, envía solo el texto con la conversión
+- **Librería**: Requiere `whatsapp-web.js` ≥ 1.34.7 (compatible con WhatsApp Web 2.3000.x)
 
 ## 📌 Notas Importantes
 

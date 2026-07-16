@@ -10,7 +10,12 @@
     "get-groups": "node src/getGroups.js",
     "logs": "node src/readLogs.js"
   },
-  "keywords": ["whatsapp", "bot", "soles", "productos"],
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "soles",
+    "productos"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=18"
@@ -18,6 +23,6 @@
   "dependencies": {
     "dotenv": "^16.4.5",
     "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.26.0"
+    "whatsapp-web.js": "^1.34.7"
   }
 }

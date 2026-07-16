@@ -230,10 +230,16 @@ async function enviarMensajeRastreo(msg, chat, cuerpo, productos = []) {
     const cabeceraYTexto = lineas.join('\n');
 
     if (msg.hasMedia) {
-      const media = await msg.downloadMedia();
-      if (media) {
-        await client.sendMessage(GRUPO_RASTREO, media, { caption: cabeceraYTexto });
-      } else {
+      try {
+        const media = await msg.downloadMedia();
+        if (media) {
+          await client.sendMessage(GRUPO_RASTREO, media, { caption: cabeceraYTexto });
+        } else {
+          await client.sendMessage(GRUPO_RASTREO, cabeceraYTexto);
+        }
+      } catch (mediaErr) {
+        // Fallo típico wwebjs: "upload failed: media entry was not created" → al menos el texto
+        console.warn('[Rastreo] Falló media, enviando solo texto:', mediaErr.message);
         await client.sendMessage(GRUPO_RASTREO, cabeceraYTexto);
       }
     } else {
@@ -371,12 +377,21 @@ client.on('group_join', async (notification) => {
   }
 });
 
+/** ID del chat sin llamar getChat (evita crash de canales/@newsletter en wwebjs). */
+function idDesdeMensaje(msg) {
+  return msg?.from || msg?.id?.remote || msg?._data?.from || '';
+}
+
+function esGrupoWhatsApp(id) {
+  return typeof id === 'string' && id.endsWith('@g.us');
+}
+
 // Si eliminan un mensaje en el grupo origen, eliminar también el mensaje correspondiente en el grupo destino
 client.on('message_revoke_everyone', async (message, revokedMsg) => {
   if (faltaConfigurarGrupos) return;
+  // Filtrar por from ANTES de getChat (canales lanzan error "r" en wwebjs 1.34.x)
+  if (idDesdeMensaje(message) !== GRUPO_ORIGEN) return;
   try {
-    const chat = await message.getChat();
-    if (!chat.isGroup || chat.id._serialized !== GRUPO_ORIGEN) return;
     const idOrigen = (revokedMsg && revokedMsg.id && revokedMsg.id._serialized) || message.id._serialized;
     const idDestino = MAPA_ORIGEN_DESTINO.get(idOrigen);
     if (!idDestino) return;
@@ -395,9 +410,8 @@ client.on('message_revoke_everyone', async (message, revokedMsg) => {
 // Si editan un mensaje en el grupo origen, editar el correspondiente en el grupo destino
 client.on('message_edit', async (message, newBody, prevBody) => {
   if (faltaConfigurarGrupos) return;
+  if (idDesdeMensaje(message) !== GRUPO_ORIGEN) return;
   try {
-    const chat = await message.getChat();
-    if (!chat.isGroup || chat.id._serialized !== GRUPO_ORIGEN) return;
     const idOrigen = message.id._serialized;
     const idDestino = MAPA_ORIGEN_DESTINO.get(idOrigen);
     if (!idDestino) return;
@@ -417,12 +431,24 @@ client.on('message_edit', async (message, newBody, prevBody) => {
 });
 
 client.on('message', async (msg) => {
+  const idFrom = idDesdeMensaje(msg);
+
+  // Con grupos configurados: solo el origen; evita getChat en canales/newsletters (error "r")
+  if (!faltaConfigurarGrupos) {
+    if (idFrom !== GRUPO_ORIGEN) return;
+  } else if (!esGrupoWhatsApp(idFrom)) {
+    // Modo setup: ignorar privados y canales sin loguear
+    return;
+  }
+
   let chat;
   try {
     chat = await msg.getChat();
   } catch (err) {
-    // Chats tipo Canal o estructuras nuevas pueden fallar en la librería; ignorar
-    console.warn('No se pudo obtener el chat (p. ej. canal no soportado):', err.message);
+    // Solo loguear si era el grupo origen (caso raro); el resto ya se filtró arriba
+    if (!faltaConfigurarGrupos && idFrom === GRUPO_ORIGEN) {
+      console.warn('No se pudo obtener el chat del grupo origen:', err.message);
+    }
     return;
   }
   if (!chat.isGroup) return;
